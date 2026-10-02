@@ -21,26 +21,75 @@
     <meta name="apple-mobile-web-app-title" content="儿童视频播放器">
 
     <!-- 预加载关键资源 -->
-    <link rel="preload" href="styles.css?v=20250722-2" as="style">
-    <link rel="preload" href="app.js?v=20250722-2" as="script">
+    <link rel="preload" href="styles.css?v=20261002-cute" as="style">
+    <link rel="preload" href="app.js?v=20261002-cute" as="script">
 
     <title>🎬 儿童视频播放器</title>
-    <!-- Plyr CSS -->
-    <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
-    <link rel="stylesheet" href="styles.css?v=20250722-2">
+    <!-- Plyr CSS (Local for LAN/Offline) -->
+    <link rel="stylesheet" href="vendor/plyr.css" />
+    <link rel="stylesheet" href="styles.css?v=20261002-cute">
     <link rel="manifest" href="manifest.json">
     <link rel="icon" href="icon-192x192.png">
     <link rel="apple-touch-icon" href="icon-192x192.png">
 </head>
 <body>
-    <!-- 加载页面 -->
+    <!-- 加载页面 (萌趣微动效) -->
     <div id="loading" class="screen">
-        <div class="loading-typing">
-            <div class="typing-line">
-                <span id="typing-text" aria-label="welcome to player"></span>
-                <span class="typing-cursor" aria-hidden="true"></span>
+        <div class="loading-fun-box">
+            <!-- 萌趣小电视 -->
+            <div class="tv-wrapper">
+                <!-- 顶部天线 -->
+                <div class="tv-antenna">
+                    <div class="antenna-stick antenna-left"></div>
+                    <div class="antenna-stick antenna-right"></div>
+                </div>
+                <!-- 电视机主体 -->
+                <div class="tv-body">
+                    <!-- 屏幕区域 -->
+                    <div class="tv-screen">
+                        <div class="screen-glare"></div>
+                        <!-- 灵动眨眼与表情 -->
+                        <div class="tv-face">
+                            <div class="tv-eye eye-left">
+                                <span class="eye-shine"></span>
+                            </div>
+                            <div class="tv-eye eye-right">
+                                <span class="eye-shine"></span>
+                            </div>
+                            <div class="tv-blush blush-left"></div>
+                            <div class="tv-blush blush-right"></div>
+                            <div class="tv-mouth"></div>
+                        </div>
+                    </div>
+                    <!-- 旋钮与扬声器 -->
+                    <div class="tv-side">
+                        <div class="tv-knob knob-top"></div>
+                        <div class="tv-knob knob-bottom"></div>
+                        <div class="tv-speaker">
+                            <span class="speaker-line"></span>
+                            <span class="speaker-line"></span>
+                            <span class="speaker-line"></span>
+                        </div>
+                    </div>
+                </div>
+                <!-- 底座支脚 -->
+                <div class="tv-legs">
+                    <div class="leg leg-left"></div>
+                    <div class="leg leg-right"></div>
+                </div>
+                <!-- 呼吸投影 -->
+                <div class="tv-shadow"></div>
             </div>
-            <div class="typing-subtitle">loading...</div>
+
+            <!-- 加载提示与三色弹跳糖果球 -->
+            <div class="loading-status">
+                <span class="loading-title">正在准备精彩视频</span>
+                <div class="loading-dots">
+                    <span class="dot dot-1"></span>
+                    <span class="dot dot-2"></span>
+                    <span class="dot dot-3"></span>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -77,26 +126,37 @@
     </div>
 
     <!-- 视频播放页面 -->
-    <div id="player-screen" class="screen hidden">
-        <header class="app-header">
-            <button id="back-to-videos" class="back-btn">← 返回</button>
-            <h1 id="video-title">🎬 正在播放</h1>
+    <div id="player-screen" class="screen hidden player-screen-cinema">
+        <header class="player-header">
+            <button id="back-to-videos" class="player-back-btn" title="返回列表">
+                <span class="back-arrow">‹</span>
+                <span class="back-text">返回</span>
+            </button>
+            <div class="player-title-box">
+                <span id="player-badge" class="player-badge">第 1 集</span>
+                <h1 id="video-title" class="player-video-title">正在准备播放...</h1>
+            </div>
+            <div class="player-header-spacer"></div>
         </header>
-        <main class="content player-content">
-            <div id="video-container">
-                <video id="video-player" playsinline>
-                    <source id="video-source" src="" type="video/mp4">
+        <main class="player-main">
+            <div id="video-container" class="video-container">
+                <video id="video-player" playsinline preload="auto">
                     <track id="subtitle-track" kind="subtitles" src="" srclang="zh" label="中文字幕" default style="display: none;">
                     您的浏览器不支持视频播放。
                 </video>
-            </div>
-            <div id="download-progress" class="progress-container hidden">
-                <div class="progress-info">
-                    <span>📥 正在下载视频...</span>
-                    <span id="progress-text">0%</span>
-                </div>
-                <div class="progress-bar">
-                    <div id="progress-fill" class="progress-fill"></div>
+                <!-- 专业流媒体加载与准备遮罩层 -->
+                <div id="download-progress" class="player-loader-overlay hidden">
+                    <div class="loader-card">
+                        <div class="loader-spinner"></div>
+                        <div class="loader-info">
+                            <span class="loader-title">正在连接高清视频流...</span>
+                            <span id="progress-text" class="loader-percent">0%</span>
+                        </div>
+                        <div class="loader-bar">
+                            <div id="progress-fill" class="loader-bar-fill"></div>
+                        </div>
+                        <span class="loader-hint">已优化 HTTP 206 极速分段加载与 Seek 支持</span>
+                    </div>
                 </div>
             </div>
         </main>
@@ -107,8 +167,8 @@
         <span id="error-message"></span>
     </div>
 
-    <!-- Plyr JavaScript -->
-    <script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>
-    <script src="app.js?v=20250722-2"></script>
+    <!-- Plyr JavaScript (Local for LAN/Offline) -->
+    <script src="vendor/plyr.js"></script>
+    <script src="app.js?v=20261002-cute"></script>
 </body>
 </html>

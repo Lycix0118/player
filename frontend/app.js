@@ -9,9 +9,10 @@ class VideoPlayerApp {
         this.currentPath = [];  // 当前路径栈 ['folder1', 'subfolder1']
         this.folderHistory = []; // 导航历史
         this.player = null; // Plyr播放器实例
-        // 加载页状态：打字是否完成、数据是否就绪
-        this.typingDone = false;
+        // 启动与就绪状态
         this.foldersLoaded = false;
+        this.loadStartTime = Date.now();
+        this.appEntered = false;
         
         this.init();
     }
@@ -23,8 +24,7 @@ class VideoPlayerApp {
         // 注册 Service Worker
         this.registerServiceWorker();
         
-        // 开始打字动画并并行加载数据
-        this.startTypingAnimation();
+        // 加载文件夹数据
         this.loadFolders();
     }
 
@@ -52,9 +52,12 @@ class VideoPlayerApp {
             this.clearVideoPlayer();
         }
         
-        // 隐藏所有屏幕
-        document.querySelectorAll('.screen').forEach(screen => {
-            screen.classList.add('hidden');
+        // 隐藏应用主要内容屏幕
+        ['folders', 'videos', 'player'].forEach(name => {
+            const screen = document.getElementById(`${name}-screen`);
+            if (screen) {
+                screen.classList.add('hidden');
+            }
         });
         
         // 显示目标屏幕
@@ -82,10 +85,12 @@ class VideoPlayerApp {
             this.updateBackButton();
             // 数据就绪标记
             this.foldersLoaded = true;
-            this.maybeEnterApp();
+            this.enterApp();
         } catch (error) {
             this.showError('加载文件夹失败');
             console.error('Error loading folders:', error);
+            // 即使出错也平滑退出加载动画，不锁死界面
+            this.enterApp();
         }
     }
 
@@ -113,9 +118,14 @@ class VideoPlayerApp {
             const hasVideos = typeof folder === 'object' && folder.has_list_file;
             const folderIcon = '📁'; // 统一使用文件夹图标
 
+            const countBadge = (typeof folder === 'object' && folder.video_count && folder.video_count > 0)
+                ? `<div class="folder-count">${folder.video_count} 部视频</div>`
+                : '';
+
             folderElement.innerHTML = `
                 <span class="folder-icon">${folderIcon}</span>
                 <div class="folder-name">${folderName}</div>
+                ${countBadge}
             `;
 
             // 点击和键盘事件
@@ -219,21 +229,25 @@ class VideoPlayerApp {
         videos.forEach((video, index) => {
             const videoElement = document.createElement('div');
             videoElement.className = 'video-item';
-            // 移除动画延迟，让所有视频项一次性显示
-            // videoElement.style.animationDelay = `${index * 0.12}s`;
+            const videoIndex = video.index || (index + 1);
+            videoElement.dataset.videoIndex = videoIndex;
             videoElement.dataset.videoPage = video.page;
+            videoElement.dataset.videoBvid = video.bvid || '';
             videoElement.setAttribute('tabindex', '0'); // 键盘可访问性
 
-            // 初始显示占位符，添加加载状态
-            const thumbnailHTML = '<div class="placeholder-icon">🎬</div>';
+            // 如果已有本地缓存好的封面，直接展示，无需loading
+            const hasCover = !!video.cover_url;
+            const thumbnailHTML = hasCover
+                ? `<img src="${this.apiBase}${video.cover_url}" alt="视频封面" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"><div class="placeholder-icon" style="display: none;">🎬</div>`
+                : '<div class="placeholder-icon">🎬</div>';
 
             videoElement.innerHTML = `
-                <div class="video-thumbnail loading">
+                <div class="video-thumbnail ${hasCover ? '' : 'loading'}">
                     ${thumbnailHTML}
                 </div>
                 <div class="video-info">
                     <div class="video-title">${video.title}</div>
-                    <div class="video-page">第 ${video.page} 集</div>
+                    <div class="video-page">第 ${videoIndex} 集</div>
                     ${video.duration ? `<div class="video-duration">${this.formatDuration(video.duration)}</div>` : ''}
                 </div>
             `;
@@ -256,34 +270,50 @@ class VideoPlayerApp {
     }
 
     async loadCoversAsync(videos) {
-        // 异步加载每个视频的封面
-        for (const video of videos) {
-            if (video.bvid) {
-                try {
-                    // 延迟一点时间，避免同时发起太多请求
-                    await new Promise(resolve => setTimeout(resolve, 100));
+        if (!videos || videos.length === 0) return;
 
-                    const response = await fetch(`${this.apiBase}/api/cover/${video.bvid}/${video.page}`);
-                    if (response.ok) {
-                        const result = await response.json();
-                        if (result.cover_url) {
-                            this.updateVideoCover(video.page, result.cover_url);
+        // 仅对尚未加载封面的项发起拉取
+        const needCovers = videos.filter(v => !v.cover_url && v.bvid);
+        if (needCovers.length === 0) return;
+
+        // 按 bvid 归类分组，支持单合集包含多个不同 BV
+        const bvidMap = new Map();
+        for (const v of needCovers) {
+            if (!bvidMap.has(v.bvid)) {
+                bvidMap.set(v.bvid, []);
+            }
+            bvidMap.get(v.bvid).push(v);
+        }
+
+        // 分组批量加载封面
+        for (const [bvid, items] of bvidMap.entries()) {
+            const pages = items.map(it => it.page);
+            try {
+                const response = await fetch(`${this.apiBase}/api/batch/covers/${bvid}?pages=${pages.join(',')}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data && data.covers) {
+                        for (const item of items) {
+                            const coverUrl = data.covers[String(item.page)];
+                            if (coverUrl) {
+                                this.updateVideoCover(item.index || item.page, coverUrl);
+                            }
                         }
                     }
-                } catch (error) {
-                    console.error(`加载封面失败 (${video.title}):`, error);
                 }
+            } catch (error) {
+                console.error(`批量加载封面失败 (${bvid}):`, error);
             }
         }
     }
 
-    updateVideoCover(page, coverUrl) {
-        // 找到对应的视频元素并更新封面
-        const videoElement = document.querySelector(`[data-video-page="${page}"]`);
+    updateVideoCover(identifier, coverUrl) {
+        // 优先通过 data-video-index 匹配，其次通过 data-video-page 匹配
+        const videoElement = document.querySelector(`[data-video-index="${identifier}"]`) ||
+                             document.querySelector(`[data-video-page="${identifier}"]`);
         if (videoElement) {
             const thumbnail = videoElement.querySelector('.video-thumbnail');
             if (thumbnail) {
-                // 移除加载状态
                 thumbnail.classList.remove('loading');
                 thumbnail.innerHTML = `
                     <img src="${this.apiBase}${coverUrl}" alt="视频封面"
@@ -294,45 +324,35 @@ class VideoPlayerApp {
         }
     }
 
-    // 打字动画：逐字显示“welcome to player”，结束后标记完成
-    startTypingAnimation() {
-        const text = 'welcome to player';
-        const el = document.getElementById('typing-text');
-        const cursor = document.querySelector('.typing-cursor');
-        if (!el) {
-            // 若元素不存在，直接标记完成，避免阻塞
-            this.typingDone = true;
-            this.maybeEnterApp();
-            return;
-        }
-        el.textContent = '';
-        let i = 0;
-        const charSpeed = 100; // 每个字符的基础间隔(ms)——更慢
-        const wordPause = 400; // 单词间的额外停顿(ms)
-        const typeNext = () => {
-            if (i < text.length) {
-                const ch = text[i];
-                el.textContent += ch;
-                i += 1;
-                // 如果是空格，额外停顿一下（单词间）
-                const delay = ch === ' ' ? wordPause : charSpeed;
-                setTimeout(typeNext, delay);
-            } else {
-                // 打字完成，光标继续闪烁；整体额外停顿700ms再进入
-                setTimeout(() => {
-                    this.typingDone = true;
-                    this.maybeEnterApp();
-                }, 700);
-            }
-        };
-        typeNext();
-    }
+    // 平滑退出加载动画并进入应用首页
+    enterApp() {
+        if (this.appEntered) return;
+        this.appEntered = true;
 
-    // 若数据准备完成且打字完成，则进入应用首页
-    maybeEnterApp() {
-        if (this.typingDone && this.foldersLoaded) {
-            this.showScreen('folders');
-        }
+        // 保证加载微动效至少展示 450ms（兼顾生动感与不闪烁），数据准备好立刻优雅淡出
+        const elapsed = Date.now() - (this.loadStartTime || 0);
+        const minDisplayMs = 450;
+        const delay = Math.max(0, minDisplayMs - elapsed);
+
+        setTimeout(() => {
+            const loadingEl = document.getElementById('loading');
+            const foldersScreen = document.getElementById('folders-screen');
+
+            // 预先让首页就绪
+            if (foldersScreen) {
+                foldersScreen.classList.remove('hidden');
+            }
+            this.currentScreen = 'folders';
+
+            // 加载遮罩执行平滑缩放淡出
+            if (loadingEl) {
+                loadingEl.classList.add('fade-out');
+                setTimeout(() => {
+                    loadingEl.classList.add('hidden');
+                    loadingEl.style.display = 'none';
+                }, 400);
+            }
+        }, delay);
     }
 
     formatDuration(seconds) {
@@ -345,7 +365,11 @@ class VideoPlayerApp {
     async playVideo(video) {
         try {
             this.currentVideo = video;
-            document.getElementById('video-title').textContent = `🎬 ${video.title}`;
+            const videoIndex = video.index || video.page;
+            const titleEl = document.getElementById('video-title');
+            const badgeEl = document.getElementById('player-badge');
+            if (titleEl) titleEl.textContent = video.title;
+            if (badgeEl) badgeEl.textContent = `第 ${videoIndex} 集`;
 
             // 先清空播放器
             this.clearVideoPlayer();
@@ -353,10 +377,9 @@ class VideoPlayerApp {
             this.showScreen('player');
             this.showDownloadProgress();
             
-            // 请求播放视频
-            const response = await fetch(
-                `${this.apiBase}/api/play/${encodeURIComponent(this.currentFolder)}/${video.page}`
-            );
+            // 请求播放视频，带上 bvid 与 page 参数以支持多 BV 列表
+            const playUrl = `${this.apiBase}/api/play/${encodeURIComponent(this.currentFolder)}/${videoIndex}?bvid=${encodeURIComponent(video.bvid || '')}&page=${video.page || 1}`;
+            const response = await fetch(playUrl);
             
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
@@ -373,7 +396,6 @@ class VideoPlayerApp {
                     subtitle_url: result.subtitle_url
                 });
             } else {
-                // 如果视频还在下载，可以实现轮询检查状态
                 this.showError('视频正在准备中，请稍后重试');
             }
             
@@ -387,21 +409,22 @@ class VideoPlayerApp {
     clearVideoPlayer() {
         // 销毁现有的Plyr实例
         if (this.player) {
-            this.player.destroy();
+            try { this.player.destroy(); } catch (_) {}
             this.player = null;
         }
 
         const videoPlayer = document.getElementById('video-player');
-        const videoSource = document.getElementById('video-source');
         const subtitleTrack = document.getElementById('subtitle-track');
 
         // 暂停并清空当前视频
         if (videoPlayer) {
-            videoPlayer.pause();
-            videoSource.src = '';
-            subtitleTrack.src = '';
-            subtitleTrack.style.display = 'none';
-            videoPlayer.load();
+            try { videoPlayer.pause(); } catch (_) {}
+            videoPlayer.removeAttribute('src');
+            if (subtitleTrack) {
+                subtitleTrack.src = '';
+                subtitleTrack.style.display = 'none';
+            }
+            try { videoPlayer.load(); } catch (_) {}
         }
 
         // 重置字幕状态
@@ -409,18 +432,14 @@ class VideoPlayerApp {
     }
 
     stopVideo() {
-        // 优先通过Plyr停止
         if (this.player) {
             try { this.player.pause(); } catch(_) {}
             try { this.player.currentTime = 0; } catch(_) {}
         }
-        // 同时直接操作原生video，确保彻底停止
         const videoPlayer = document.getElementById('video-player');
-        const videoSource = document.getElementById('video-source');
         const subtitleTrack = document.getElementById('subtitle-track');
         if (videoPlayer) {
             try { videoPlayer.pause(); } catch(_) {}
-            if (videoSource) videoSource.src = '';
             if (subtitleTrack) {
                 subtitleTrack.src = '';
                 subtitleTrack.style.display = 'none';
@@ -432,50 +451,56 @@ class VideoPlayerApp {
 
     loadVideoPlayer(videoUrl) {
         const videoPlayer = document.getElementById('video-player');
-        const videoSource = document.getElementById('video-source');
+        if (!videoPlayer) return;
 
-        // 设置新的视频源
-        videoSource.src = `${this.apiBase}${videoUrl}`;
-        // 确保允许自动播放
-        videoPlayer.autoplay = true;
-        videoPlayer.load();
+        // 直接规范设置 video.src，避免动态修改 source 标签的兼容性缺陷
+        videoPlayer.src = `${this.apiBase}${videoUrl}`;
+        videoPlayer.preload = 'auto';
 
-        // 如果浏览器允许，尽早开始播放（与用户点击更贴近）
-        try {
-            const playPromise = videoPlayer.play();
-            if (playPromise && typeof playPromise.then === 'function') {
-                playPromise.catch(() => {
-                    // 忽略，稍后由Plyr接管再尝试播放
-                });
-            }
-        } catch (_) {}
-
-        // 初始化Plyr播放器
+        // 初始化Plyr播放器统一托管播放时序
         this.initPlyrPlayer();
 
         this.hideDownloadProgress();
     }
 
     showDownloadProgress() {
-        document.getElementById('download-progress').classList.remove('hidden');
-        
-        // 模拟下载进度
-        let progress = 0;
-        const interval = setInterval(() => {
-            progress += Math.random() * 10;
-            if (progress >= 100) {
-                progress = 100;
-                clearInterval(interval);
+        const container = document.getElementById('download-progress');
+        const fill = document.getElementById('progress-fill');
+        const text = document.getElementById('progress-text');
+        container.classList.remove('hidden');
+
+        if (this.progressInterval) {
+            clearInterval(this.progressInterval);
+        }
+
+        let progress = 10;
+        fill.style.width = `${progress}%`;
+        text.textContent = '准备中...';
+
+        // 渐进式平滑进度提示（最高停在 92%，等待后端完成返回）
+        this.progressInterval = setInterval(() => {
+            if (progress < 90) {
+                progress += Math.max(1, (90 - progress) * 0.1);
+                fill.style.width = `${Math.round(progress)}%`;
+                text.textContent = `${Math.round(progress)}%`;
             }
-            
-            document.getElementById('progress-fill').style.width = `${progress}%`;
-            document.getElementById('progress-text').textContent = `${Math.round(progress)}%`;
-        }, 200);
+        }, 300);
     }
 
     hideDownloadProgress() {
-        document.getElementById('download-progress').classList.add('hidden');
+        if (this.progressInterval) {
+            clearInterval(this.progressInterval);
+            this.progressInterval = null;
+        }
+        const fill = document.getElementById('progress-fill');
+        const text = document.getElementById('progress-text');
+        fill.style.width = '100%';
+        text.textContent = '100%';
+        setTimeout(() => {
+            document.getElementById('download-progress').classList.add('hidden');
+        }, 300);
     }
+
 
     showError(message) {
         const errorToast = document.getElementById('error-toast');
@@ -542,7 +567,9 @@ class VideoPlayerApp {
         
         // Plyr配置选项
         const plyrOptions = {
-            // 控制按钮配置：只显示播放、进度条、字幕和全屏
+            // 锁定标准 16:9 比例，防止尺寸怪异
+            ratio: '16:9',
+            // 控制按钮配置：只显示播放、进度条、当前时间、总时长、字幕和全屏
             controls: [
                 'play', // 播放/暂停
                 'progress', // 进度条
@@ -567,7 +594,7 @@ class VideoPlayerApp {
             keyboard: { focused: true, global: false },
             tooltips: { controls: false, seek: true },
             displayDuration: true,
-            invertTime: true,
+            invertTime: false,
             toggleInvert: true
         };
 

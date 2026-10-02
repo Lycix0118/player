@@ -80,3 +80,4 @@ logs/
 video_list.txt
 todolist.txt
 plyr.md
+.cache_*.json

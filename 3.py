@@ -9,7 +9,8 @@ from hashlib import md5
 # --- 在这里粘贴您的完整Cookie ---
 # 警告：Cookie包含您的个人登录信息，请勿分享给他人！
 # Cookie会过期，如果脚本失效，请从浏览器开发者工具中获取最新的Cookie并替换。
-YOUR_COOKIE = "enable_web_push=DISABLE; buvid4=350B0AC7-DECD-BB9D-2375-9FEB57AD7C2797252-024012713-JmyvmzivRw1Pvrdd72KwIg%3D%3D; buvid_fp_plain=undefined; DedeUserID=2001914882; DedeUserID__ckMd5=453e24ba4b7a501a; LIVE_BUVID=AUTO2217305516057503; buvid3=5CEDA6E7-3943-8604-BDB2-3F176527722A16138infoc; b_nut=1737944216; _uuid=A657C1101-A5610-C7F4-C7B9-955D5CDC4106817026infoc; is-2022-channel=1; enable_feed_channel=ENABLE; rpdid=|(km)Rkmkk0J'u~RuR)|l~J; header_theme_version=OPEN; SESSDATA=388e8893%2C1761115594%2C0289c%2A42CjCm2sMIbSLxGMxJVgdWrokAHeb6RRxGeqxx8FaKRl1S3jSmMjizF1MeRM_mgkzPv1MSVlNGemdqQy1vQXg3MlFFazBnTE5CaHRGM01lQ0JsRklrR3RaU0V6R1RrRmxKYk41MW1wZzlOaGdkYVBIZnhiWmg0ZmVvM1B5cUpPNGVQWm5LTHdhYjVnIIEC; bili_jct=96592bf591d4321e93952247123296e0; theme-tip-show=SHOWED; theme-avatar-tip-show=SHOWED; hit-dyn-v2=1; fingerprint=4c547e1da2c25c3c0717942391bafba0; browser_resolution=1272-644; home_feed_column=4; buvid_fp=81480d4cc8866bfe23fae6ce91161243; PVID=3; bili_ticket=eyJhbGciOiJIUzI1NiIsImtpZCI6InMwMyIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3NTMxOTIxMDAsImlhdCI6MTc1MjkzMjg0MCwicGx0IjotMX0.irjiCLcE2Y4vxn6aixZTaWb0YB6YtlMNLbiScnqBStc; bili_ticket_expires=1753192040; theme-switch-show=SHOWED; bp_t_offset_2001914882=1091901907800162304; CURRENT_QUALITY=64; bsource=search_bing; sid=58rsqeji; CURRENT_FNVAL=4048; b_lsid=C37DBF78_1982FA2178D"
+YOUR_COOKIE = os.getenv("BILIBILI_COOKIE", "")
+
 
 
 # --- WBI签名相关函数 (无需修改) ---
