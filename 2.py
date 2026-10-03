@@ -19,7 +19,7 @@ def get_bilibili_video_covers(bvid):
 
     try:
         print(f"正在获取BV号为 {bvid} 的视频页面...")
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()  # 如果请求失败则抛出异常
         html_content = response.text
 
@@ -68,7 +68,7 @@ def get_bilibili_video_covers(bvid):
 
                 try:
                     # 下载图片
-                    img_response = requests.get(cover_url, headers=headers)
+                    img_response = requests.get(cover_url, headers=headers, timeout=15)
                     img_response.raise_for_status()
                     
                     # 获取图片文件后缀名
@@ -100,5 +100,6 @@ def get_bilibili_video_covers(bvid):
 
 # --- 使用示例 ---
 # 根据您提供的图片和代码中的信息，BV号为 BV1LnuzzyEQp
-bv_id = "BV1LnuzzyEQp"
-get_bilibili_video_covers(bv_id)
+if __name__ == "__main__":
+    bv_id = "BV1LnuzzyEQp"
+    get_bilibili_video_covers(bv_id)

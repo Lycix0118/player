@@ -98,6 +98,8 @@
         <header class="app-header">
             <button id="back-to-parent" class="back-btn hidden">← 返回</button>
             <h1 id="folders-title">📁 选择文件夹</h1>
+            <button id="install-app" class="install-btn" type="button" title="添加到桌面" aria-label="添加到桌面">➕ 添加到桌面</button>
+            <button id="open-settings" class="icon-btn" type="button" title="打开设置" aria-label="打开设置">⚙️</button>
         </header>
         <main class="content">
             <!-- 面包屑导航 -->
@@ -109,6 +111,44 @@
             <div id="folders-list" class="folders-grid">
                 <!-- 文件夹将动态加载 -->
             </div>
+        </main>
+    </div>
+
+    <!-- 设置页面 -->
+    <div id="settings-screen" class="screen hidden">
+        <header class="app-header">
+            <button id="back-from-settings" class="back-btn" type="button">← 返回</button>
+            <h1>⚙️ 设置</h1>
+            <span class="header-spacer" aria-hidden="true"></span>
+        </header>
+        <main class="content settings-content">
+            <section class="settings-section">
+                <div class="settings-section-heading"><h2>账号与连接</h2><span class="settings-section-hint">用于解锁高清画质和字幕</span></div>
+                <div class="settings-card">
+                    <label class="settings-label" for="bilibili-cookie">B站 Cookie</label>
+                    <p class="settings-description">粘贴浏览器中 bilibili.com 的完整 Cookie。Cookie 仅用于本播放器访问 B站接口。</p>
+                    <div class="cookie-input-row"><textarea id="bilibili-cookie" class="cookie-input" rows="4" placeholder="SESSDATA=...; bili_jct=...;"></textarea><button id="toggle-cookie-visibility" class="secondary-btn" type="button">显示</button></div>
+                    <div class="settings-action-row"><span id="cookie-status" class="settings-status">尚未配置</span><button id="save-cookie" class="primary-btn" type="button">保存 Cookie</button></div>
+                </div>
+            </section>
+            <section class="settings-section">
+                <div class="settings-section-heading"><h2>播放体验</h2><span class="settings-section-hint">下次打开时自动生效</span></div>
+                <div class="settings-card settings-list">
+                    <label class="setting-row"><span><strong>自动播放</strong><small>进入视频页面后自动开始播放</small></span><input id="setting-autoplay" class="switch-input" type="checkbox"></label>
+                    <label class="setting-row"><span><strong>默认开启字幕</strong><small>视频有字幕时自动显示</small></span><input id="setting-subtitles" class="switch-input" type="checkbox" checked></label>
+                </div>
+            </section>
+            <section class="settings-section">
+                <div class="settings-section-heading"><h2>外观</h2><span class="settings-section-hint">更多主题后续加入</span></div>
+                <div class="settings-card"><label class="settings-label" for="theme-select">配色主题</label><select id="theme-select" class="settings-select"><option value="candy">糖果电视（当前）</option></select></div>
+            </section>
+            <section class="settings-section">
+                <div class="settings-section-heading"><h2>缓存与应用</h2><span id="cache-status" class="settings-section-hint">正在读取缓存状态…</span></div>
+                <div class="settings-card settings-list">
+                    <div class="setting-row setting-row-action"><span><strong>清理视频缓存</strong><small>不会删除 videos 文件夹中的原始视频</small></span><button id="clear-cache" class="secondary-btn" type="button">清理缓存</button></div>
+                    <div class="setting-row setting-row-action"><span><strong>关于播放器</strong><small>儿童视频播放器 · 简单、安全、好用</small></span><span class="app-version">v1.0</span></div>
+                </div>
+            </section>
         </main>
     </div>
 

@@ -26,7 +26,7 @@ def get_mixin_key(orig: str):
 
 def get_wbi_keys(session):
     try:
-        resp = session.get('https://api.bilibili.com/x/web-interface/nav')
+        resp = session.get('https://api.bilibili.com/x/web-interface/nav', timeout=15)
         resp.raise_for_status()
         json_content = resp.json()
         img_url: str = json_content['data']['wbi_img']['img_url']
@@ -75,7 +75,7 @@ def get_bilibili_subtitle(bvid, p_number, cookie):
         # Step 1: 获取视频页面信息
         video_page_url = f"https://www.bilibili.com/video/{bvid}"
         print(f"正在访问视频页面: {video_page_url}")
-        response = session.get(video_page_url)
+        response = session.get(video_page_url, timeout=15)
         response.raise_for_status()
         
         match = re.search(r'<script>window\.__INITIAL_STATE__=(.*?);\(function\(\)', response.text)
@@ -107,7 +107,7 @@ def get_bilibili_subtitle(bvid, p_number, cookie):
         
         player_api_url = "https://api.bilibili.com/x/player/wbi/v2"
         print(f"正在获取 P{p_number} 的字幕列表 (已WBI签名并携带Cookie)...")
-        response = session.get(player_api_url, params=signed_params)
+        response = session.get(player_api_url, params=signed_params, timeout=15)
         response.raise_for_status()
         subtitle_data = response.json()
 
@@ -135,7 +135,7 @@ def get_bilibili_subtitle(bvid, p_number, cookie):
 
         # Step 4: 保存为LRC文件
         print("正在下载字幕文件...")
-        response = session.get(subtitle_url)
+        response = session.get(subtitle_url, timeout=15)
         response.raise_for_status()
         subtitle_content = response.json()
 

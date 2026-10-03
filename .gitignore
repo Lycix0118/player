@@ -15,7 +15,8 @@ lib64/
 parts/
 sdist/
 var/
-videos/
+videos/*
+!videos/
 wheels/
 *.egg-info/
 .installed.cfg
@@ -48,10 +49,12 @@ videos/**/*.webm
 videos/**/*.m4v
 
 # Keep list.txt files
+!videos/**/
 !videos/**/list.txt
 
 # Covers (exclude cached cover images)
-covers/
+covers/*
+!covers/
 covers/**/*.jpg
 covers/**/*.png
 covers/**/*.jpeg
@@ -81,3 +84,6 @@ video_list.txt
 todolist.txt
 plyr.md
 .cache_*.json
+
+# Runtime settings containing local credentials
+backend/settings.json

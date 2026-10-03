@@ -7,11 +7,10 @@ import os
 from pathlib import Path
 from typing import Optional, Callable, List, Dict
 import json
-import urllib3
-from models import VideoInfo
-
-# 禁用SSL警告
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+try:
+    from .models import VideoInfo
+except ImportError:
+    from models import VideoInfo
 
 class BilibiliDownloader:
     """异步B站视频下载器"""

@@ -13,6 +13,7 @@ class VideoPlayerApp {
         this.foldersLoaded = false;
         this.loadStartTime = Date.now();
         this.appEntered = false;
+        this.settings = this.loadSettings();
         
         this.init();
     }
@@ -26,6 +27,16 @@ class VideoPlayerApp {
         
         // 加载文件夹数据
         this.loadFolders();
+    }
+
+    escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, (character) => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;'
+        }[character]));
     }
 
     bindEvents() {
@@ -43,8 +54,137 @@ class VideoPlayerApp {
             this.navigateToParent();
         });
 
-        // 字幕将由Plyr自动处理
+        document.getElementById('open-settings').addEventListener('click', () => this.openSettings());
+        document.getElementById('install-app').addEventListener('click', () => this.installApp());
+        document.getElementById('back-from-settings').addEventListener('click', () => this.showScreen('folders'));
+        document.getElementById('save-cookie').addEventListener('click', () => this.saveCookie());
+        document.getElementById('toggle-cookie-visibility').addEventListener('click', () => this.toggleCookieVisibility());
+        document.getElementById('clear-cache').addEventListener('click', () => this.clearCache());
+        document.getElementById('setting-autoplay').addEventListener('change', (event) => this.updateSetting('autoplay', event.target.checked));
+        document.getElementById('setting-subtitles').addEventListener('change', (event) => this.updateSetting('subtitles', event.target.checked));
+        document.getElementById('theme-select').addEventListener('change', (event) => this.updateSetting('theme', event.target.value));
+        this.applySettings();
+        this.updateInstallButton();
     }
+
+    async installApp() {
+        if (this.isAppInstalled()) {
+            this.showError('应用已经添加到桌面');
+            return;
+        }
+
+        if (!deferredPrompt) {
+            this.showError('当前浏览器暂不支持自动添加，请打开浏览器菜单选择“安装应用”或“添加到主屏幕”');
+            return;
+        }
+
+        const installPrompt = deferredPrompt;
+        deferredPrompt = null;
+        installPrompt.prompt();
+
+        try {
+            await installPrompt.userChoice;
+        } catch (error) {
+            console.log('PWA 安装结果读取失败:', error);
+        }
+        this.updateInstallButton();
+    }
+
+    isAppInstalled() {
+        return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    }
+
+    updateInstallButton() {
+        const button = document.getElementById('install-app');
+        if (!button) return;
+
+        if (this.isAppInstalled()) {
+            button.textContent = '✓ 已添加';
+            button.disabled = true;
+            button.title = '应用已添加到桌面';
+            button.setAttribute('aria-label', '应用已添加到桌面');
+        }
+    }
+
+    loadSettings() {
+        try {
+            return { autoplay: false, subtitles: true, theme: 'candy', ...JSON.parse(localStorage.getItem('player-settings') || '{}') };
+        } catch (error) { return { autoplay: false, subtitles: true, theme: 'candy' }; }
+    }
+
+    updateSetting(key, value) {
+        this.settings[key] = value;
+        localStorage.setItem('player-settings', JSON.stringify(this.settings));
+        if (key === 'theme') this.applySettings();
+    }
+
+    applySettings() {
+        const autoplay = document.getElementById('setting-autoplay');
+        const subtitles = document.getElementById('setting-subtitles');
+        const theme = document.getElementById('theme-select');
+        if (autoplay) autoplay.checked = this.settings.autoplay;
+        if (subtitles) subtitles.checked = this.settings.subtitles;
+        if (theme) theme.value = this.settings.theme;
+    }
+
+    async openSettings() {
+        const cookieInput = document.getElementById('bilibili-cookie');
+        if (cookieInput) cookieInput.value = '';
+        const status = document.getElementById('cookie-status');
+        if (status) status.textContent = '正在读取状态…';
+        this.applySettings();
+        this.showScreen('settings');
+        try {
+            const response = await fetch(this.apiBase + '/api/settings/cookie/status');
+            const data = await response.json();
+            if (status) status.textContent = data.has_cookie ? '已配置 Cookie' : '尚未配置';
+        } catch (error) { if (status) status.textContent = '无法读取状态'; }
+        this.loadCacheStatus();
+    }
+
+    toggleCookieVisibility() {
+        const input = document.getElementById('bilibili-cookie');
+        const button = document.getElementById('toggle-cookie-visibility');
+        if (!input || !button) return;
+        input.classList.toggle('cookie-visible');
+        button.textContent = input.classList.contains('cookie-visible') ? '隐藏' : '显示';
+    }
+
+    async saveCookie() {
+        const input = document.getElementById('bilibili-cookie');
+        const status = document.getElementById('cookie-status');
+        const cookie = input?.value.trim() || '';
+        if (!cookie) { this.showError('请先粘贴 Cookie'); return; }
+        try {
+            const response = await fetch(this.apiBase + '/api/settings/cookie', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cookie }) });
+            if (!response.ok) throw new Error('save failed');
+            input.value = '';
+            if (status) status.textContent = '已保存 Cookie';
+            this.showError('Cookie 保存成功');
+        } catch (error) { if (status) status.textContent = '保存失败'; this.showError('Cookie 保存失败，请检查服务是否正常'); }
+    }
+
+    async loadCacheStatus() {
+        const status = document.getElementById('cache-status');
+        try {
+            const response = await fetch(this.apiBase + '/api/cache/status');
+            const data = await response.json();
+            const size = data.current_cache_size_mb ?? data.total_size_mb ?? data.cache_size_mb ?? 0;
+            if (status) status.textContent = '当前缓存 ' + size + ' MB';
+        } catch (error) { if (status) status.textContent = '缓存状态不可用'; }
+    }
+
+    async clearCache() {
+        if (!window.confirm('确定清理已下载的视频缓存吗？')) return;
+        try {
+            const response = await fetch(this.apiBase + '/api/cache/clean', { method: 'POST' });
+            if (!response.ok) throw new Error('clean failed');
+            await this.loadCacheStatus();
+            this.showError('缓存清理完成');
+        } catch (error) { this.showError('缓存清理失败'); }
+    }
+
+        // 字幕将由Plyr自动处理
 
     showScreen(screenName) {
         // 如果正在离开播放器屏幕，彻底停止并清理视频播放
@@ -53,7 +193,7 @@ class VideoPlayerApp {
         }
         
         // 隐藏应用主要内容屏幕
-        ['folders', 'videos', 'player'].forEach(name => {
+        ['folders', 'videos', 'player', 'settings'].forEach(name => {
             const screen = document.getElementById(`${name}-screen`);
             if (screen) {
                 screen.classList.add('hidden');
@@ -115,16 +255,17 @@ class VideoPlayerApp {
             folderElement.setAttribute('tabindex', '0'); // 键盘可访问性
 
             const folderName = typeof folder === 'string' ? folder : folder.name;
+            const safeFolderName = this.escapeHtml(folderName);
             const hasVideos = typeof folder === 'object' && folder.has_list_file;
             const folderIcon = '📁'; // 统一使用文件夹图标
 
             const countBadge = (typeof folder === 'object' && folder.video_count && folder.video_count > 0)
-                ? `<div class="folder-count">${folder.video_count} 部视频</div>`
+                ? `<div class="folder-count">${this.escapeHtml(folder.video_count)} 部视频</div>`
                 : '';
 
             folderElement.innerHTML = `
                 <span class="folder-icon">${folderIcon}</span>
-                <div class="folder-name">${folderName}</div>
+                <div class="folder-name">${safeFolderName}</div>
                 ${countBadge}
             `;
 
@@ -238,7 +379,7 @@ class VideoPlayerApp {
             // 如果已有本地缓存好的封面，直接展示，无需loading
             const hasCover = !!video.cover_url;
             const thumbnailHTML = hasCover
-                ? `<img src="${this.apiBase}${video.cover_url}" alt="视频封面" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"><div class="placeholder-icon" style="display: none;">🎬</div>`
+                ? `<img src="${this.escapeHtml(this.apiBase + video.cover_url)}" alt="视频封面" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"><div class="placeholder-icon" style="display: none;">🎬</div>`
                 : '<div class="placeholder-icon">🎬</div>';
 
             videoElement.innerHTML = `
@@ -246,9 +387,9 @@ class VideoPlayerApp {
                     ${thumbnailHTML}
                 </div>
                 <div class="video-info">
-                    <div class="video-title">${video.title}</div>
-                    <div class="video-page">第 ${videoIndex} 集</div>
-                    ${video.duration ? `<div class="video-duration">${this.formatDuration(video.duration)}</div>` : ''}
+                    <div class="video-title">${this.escapeHtml(video.title)}</div>
+                    <div class="video-page">第 ${this.escapeHtml(videoIndex)} 集</div>
+                    ${video.duration ? `<div class="video-duration">${this.escapeHtml(this.formatDuration(video.duration))}</div>` : ''}
                 </div>
             `;
 
@@ -316,7 +457,7 @@ class VideoPlayerApp {
             if (thumbnail) {
                 thumbnail.classList.remove('loading');
                 thumbnail.innerHTML = `
-                    <img src="${this.apiBase}${coverUrl}" alt="视频封面"
+                    <img src="${this.escapeHtml(this.apiBase + coverUrl)}" alt="视频封面"
                          onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
                     <div class="placeholder-icon" style="display: none;">🎬</div>
                 `;
@@ -539,18 +680,18 @@ class VideoPlayerApp {
             subtitleTrack.src = `${this.apiBase}${subtitleUrl}`;
             subtitleTrack.style.display = 'block';
 
-            // 默认开启字幕
-            this.subtitleEnabled = true;
+            // 根据用户设置决定是否默认显示字幕
+            this.subtitleEnabled = this.settings.subtitles;
             console.log('字幕已加载，将在Plyr初始化时自动启用');
 
-            // 等待视频和字幕都加载完成后启用字幕
+            // 等待视频和字幕都加载完成后应用字幕状态
             const enableSubtitle = () => {
                 if (videoPlayer.textTracks.length > 0) {
-                    videoPlayer.textTracks[0].mode = 'showing';
+                    videoPlayer.textTracks[0].mode = this.settings.subtitles ? 'showing' : 'disabled';
                 }
             };
 
-            // 如果视频已经加载，立即启用字幕
+            // 如果视频已经加载，立即应用字幕状态
             if (videoPlayer.readyState >= 1) {
                 enableSubtitle();
             } else {
@@ -582,12 +723,12 @@ class VideoPlayerApp {
             settings: [],
             // 字幕配置
             captions: {
-                active: true, // 默认开启字幕（如果有的话）
+                active: this.settings.subtitles, // 默认开启字幕（如果有的话）
                 language: 'auto',
                 update: true
             },
             // 其他配置
-            autoplay: true, // 优先尝试自动播放
+            autoplay: this.settings.autoplay, // 优先尝试自动播放
             clickToPlay: true,
             hideControls: true,
             resetOnEnd: false,
@@ -605,13 +746,14 @@ class VideoPlayerApp {
         this.player.on('ready', () => {
             console.log('Plyr播放器已就绪');
             // 如果有字幕且默认开启，则启用字幕
-            if (this.subtitleEnabled && this.player.captions && this.player.captions.tracks.length > 0) {
+            if (this.settings.subtitles && this.subtitleEnabled && this.player.captions && this.player.captions.tracks.length > 0) {
                 this.player.captions.active = true;
             }
-            // 尝试自动播放
-            this.player.play().catch(e => {
-                console.log('自动播放被阻止，需要用户手动播放');
-            });
+            if (this.settings.autoplay) {
+                this.player.play().catch(e => {
+                    console.log('自动播放被阻止，需要用户手动播放');
+                });
+            }
         });
 
         this.player.on('play', () => {
@@ -637,8 +779,8 @@ class VideoPlayerApp {
         // 检测视频是否可以播放
         this.player.on('canplay', () => {
             console.log('视频可以播放');
-            // 再次确保处于播放中
-            if (this.player && this.player.paused) {
+            // 仅在用户开启自动播放时重试，避免覆盖手动暂停
+            if (this.settings.autoplay && this.player && this.player.paused) {
                 this.player.play().catch(() => {});
             }
         });
@@ -676,7 +818,7 @@ class VideoPlayerApp {
 
 // 启动应用
 document.addEventListener('DOMContentLoaded', () => {
-    new VideoPlayerApp();
+    window.videoPlayerApp = new VideoPlayerApp();
 });
 
 // PWA 安装提示
@@ -685,12 +827,13 @@ let deferredPrompt;
 window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     deferredPrompt = e;
-    
-    // 可以在这里显示自定义的安装提示
+
+    window.videoPlayerApp?.updateInstallButton();
     console.log('PWA 可以安装');
 });
 
 window.addEventListener('appinstalled', () => {
     console.log('PWA 已安装');
     deferredPrompt = null;
+    window.videoPlayerApp?.updateInstallButton();
 });

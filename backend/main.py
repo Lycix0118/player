@@ -624,11 +624,6 @@ async def get_folder_episodes_async(folder_path: str) -> List[Dict]:
     核心：解析文件夹下 list.txt 中的所有 BV（支持多 BV 集合与单个 BV 多个分P）
     展开生成统一的连续集数列表 (index: 1, 2, 3...)
     """
-    cache_key = f"folder_episodes_{folder_path}"
-    cached = get_cached(cache_key)
-    if cached is not None:
-        return cached
-
     target_folder = safe_resolve_path(VIDEOS_DIR, folder_path)
     if not target_folder or not target_folder.exists() or not target_folder.is_dir():
         return []
@@ -636,6 +631,16 @@ async def get_folder_episodes_async(folder_path: str) -> List[Dict]:
     list_file = target_folder / "list.txt"
     if not list_file.exists():
         return []
+
+    try:
+        list_mtime_ns = list_file.stat().st_mtime_ns
+    except OSError:
+        return []
+
+    cache_key = f"folder_episodes_{folder_path}:{list_mtime_ns}"
+    cached = get_cached(cache_key)
+    if cached is not None:
+        return cached
 
     cache_file = target_folder / ".cache_episodes.json"
     if cache_file.exists():
@@ -869,7 +874,8 @@ def download_and_merge(bvid: str, p_info: dict, target_dir: Path) -> str:
     clean_name = re.sub(r'[\\/*?:"<>|]', "", part_title).strip()
     if not clean_name:
         clean_name = f"{bvid}_p{page}"
-    final_video_path = target_dir / f"{clean_name}.mp4"
+    final_video_path = target_dir / f"{bvid}_p{page}.mp4"
+    merged_temp_path = target_dir / f".temp_{bvid}_p{page}_merged.mp4"
 
     if final_video_path.exists():
         print(f"Video '{clean_name}.mp4' already exists. Skipping download.")
@@ -961,9 +967,10 @@ def download_and_merge(bvid: str, p_info: dict, target_dir: Path) -> str:
             '-c', 'copy',
             '-movflags', '+faststart',
             '-y',
-            str(final_video_path)
+            str(merged_temp_path)
         ]
         subprocess.run(command, shell=False, check=True, capture_output=True, text=True, encoding='utf-8', errors='replace')
+        os.replace(merged_temp_path, final_video_path)
     except subprocess.CalledProcessError as e:
         final_video_path.unlink(missing_ok=True)
         raise Exception(f"ffmpeg merge failed: {e.stderr}")
@@ -971,6 +978,7 @@ def download_and_merge(bvid: str, p_info: dict, target_dir: Path) -> str:
         # 始终清理临时音视频文件
         temp_audio_path.unlink(missing_ok=True)
         temp_video_path.unlink(missing_ok=True)
+        merged_temp_path.unlink(missing_ok=True)
 
     return str(final_video_path)
 
@@ -1031,6 +1039,32 @@ async def list_folders(path: str = ""):
     sorted_folders = sort_folders_chinese(folders)
     return JSONResponse(content=sorted_folders, headers={"Content-Type": "application/json; charset=utf-8"})
 
+@app.get("/api/settings/cookie/status")
+async def get_cookie_status():
+    return {"has_cookie": bool(BILIBILI_COOKIE.strip())}
+
+
+@app.post("/api/settings/cookie")
+async def update_cookie(request: Request):
+    global BILIBILI_COOKIE
+    try:
+        payload = await request.json()
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from error
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON body must be an object")
+
+    cookie = payload.get("cookie")
+    if not isinstance(cookie, str):
+        raise HTTPException(status_code=400, detail="Cookie must be a string")
+    cookie = cookie.strip()
+    if not cookie or len(cookie) > 20000:
+        raise HTTPException(status_code=400, detail="Invalid cookie")
+    BILIBILI_COOKIE = cookie
+    return {"success": True, "has_cookie": True}
+
+
 @app.get("/api/cache/status")
 async def get_cache_status():
     """获取视频缓存使用量与磁盘剩余空间监控"""
@@ -1059,25 +1093,6 @@ async def manual_cache_clean():
     return JSONResponse(content=res, headers={"Content-Type": "application/json; charset=utf-8"})
 
 
-@app.get("/api/folders/{folder_path:path}")
-async def list_videos_in_folder(folder_path: str):
-    """
-    返回指定合集下的分集列表（完整支持多 BV 列表和单个 BV 多分P）
-    """
-    target_folder = safe_resolve_path(VIDEOS_DIR, folder_path)
-    if not target_folder or not target_folder.exists() or not target_folder.is_dir():
-        raise HTTPException(status_code=404, detail=f"Folder '{folder_path}' not found")
-
-    list_file = target_folder / "list.txt"
-    if not list_file.exists():
-        raise HTTPException(status_code=404, detail=f"'list.txt' not found in folder '{folder_path}'")
-
-    episodes = await get_folder_episodes_async(folder_path)
-    if not episodes:
-        raise HTTPException(status_code=500, detail="Could not fetch video episodes for the BV list.")
-
-    return JSONResponse(content=episodes, headers={"Content-Type": "application/json; charset=utf-8"})
-
 @app.get("/api/folders/{folder_path:path}/details")
 async def get_videos_details(folder_path: str):
     """获取视频详细信息（封面、字幕可用性）"""
@@ -1097,6 +1112,26 @@ async def get_videos_details(folder_path: str):
         })
 
     return JSONResponse(content=detailed_parts, headers={"Content-Type": "application/json; charset=utf-8"})
+
+
+@app.get("/api/folders/{folder_path:path}")
+async def list_videos_in_folder(folder_path: str):
+    """
+    返回指定合集下的分集列表（完整支持多 BV 列表和单个 BV 多分P）
+    """
+    target_folder = safe_resolve_path(VIDEOS_DIR, folder_path)
+    if not target_folder or not target_folder.exists() or not target_folder.is_dir():
+        raise HTTPException(status_code=404, detail=f"Folder '{folder_path}' not found")
+
+    list_file = target_folder / "list.txt"
+    if not list_file.exists():
+        raise HTTPException(status_code=404, detail=f"'list.txt' not found in folder '{folder_path}'")
+
+    episodes = await get_folder_episodes_async(folder_path)
+    if not episodes:
+        raise HTTPException(status_code=500, detail="Could not fetch video episodes for the BV list.")
+
+    return JSONResponse(content=episodes, headers={"Content-Type": "application/json; charset=utf-8"})
 
 @app.get("/api/batch/covers/{bvid}")
 async def get_batch_covers(bvid: str, pages: str):
@@ -1219,8 +1254,14 @@ async def play_video(
     target_title = target_ep['title']
 
     clean_name = re.sub(r'[\\/*?:"<>|]', "", target_title).strip() or f"{target_bvid}_p{target_page}"
-    final_video_path = target_folder / f"{clean_name}.mp4"
-    alt_video_path = target_folder / f"{target_bvid}_p{target_page}.mp4"
+    final_video_path = target_folder / f"{target_bvid}_p{target_page}.mp4"
+    legacy_video_path = target_folder / f"{clean_name}.mp4"
+
+    def find_existing_video() -> Optional[Path]:
+        for candidate in (final_video_path, legacy_video_path):
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        return None
 
     # 字幕检查与获取（异步）
     has_subtitle = await check_subtitle_availability_async(target_bvid, target_page, target_cid)
@@ -1229,26 +1270,15 @@ async def play_video(
         subtitle_url = await download_and_cache_subtitle(target_bvid, target_page, target_cid)
 
     # 快捷路径：若已存在合成好的视频（同名或 BV 命名），直接返回并刷新 LRU 活跃度
-    if final_video_path.exists():
+    existing_video_path = find_existing_video()
+    if existing_video_path:
         try:
-            os.utime(final_video_path, None)
+            os.utime(existing_video_path, None)
         except Exception:
             pass
         return {
             "status": "ready",
-            "video_url": f"/static/{folder_path}/{final_video_path.name}",
-            "has_subtitle": has_subtitle,
-            "subtitle_url": subtitle_url
-        }
-
-    if alt_video_path.exists():
-        try:
-            os.utime(alt_video_path, None)
-        except Exception:
-            pass
-        return {
-            "status": "ready",
-            "video_url": f"/static/{folder_path}/{alt_video_path.name}",
+            "video_url": f"/static/{folder_path}/{existing_video_path.name}",
             "has_subtitle": has_subtitle,
             "subtitle_url": subtitle_url
         }
@@ -1258,14 +1288,15 @@ async def play_video(
     lock = await get_download_lock(lock_key)
     async with lock:
         # 再次确认是否在等待锁期间已被其他请求下载完成
-        if final_video_path.exists():
+        existing_video_path = find_existing_video()
+        if existing_video_path:
             try:
-                os.utime(final_video_path, None)
+                os.utime(existing_video_path, None)
             except Exception:
                 pass
             return {
                 "status": "ready",
-                "video_url": f"/static/{folder_path}/{final_video_path.name}",
+                "video_url": f"/static/{folder_path}/{existing_video_path.name}",
                 "has_subtitle": has_subtitle,
                 "subtitle_url": subtitle_url
             }
@@ -1319,15 +1350,29 @@ def stream_video_with_range(request: Request, file_path: Path) -> StreamingRespo
         }
         return StreamingResponse(full_iter(), status_code=200, headers=headers, media_type=content_type)
 
-    range_match = re.match(r"bytes=(\d+)-(\d*)", range_header.strip())
+    if file_size == 0:
+        return StreamingResponse(iter([]), status_code=416, headers={"Content-Range": "bytes */0"})
+
+    range_match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header.strip())
     if not range_match:
         raise HTTPException(status_code=416, detail="Invalid Range Header")
 
-    start = int(range_match.group(1))
-    end_str = range_match.group(2)
-    end = int(end_str) if end_str else file_size - 1
+    start_str, end_str = range_match.groups()
+    if not start_str and not end_str:
+        raise HTTPException(status_code=416, detail="Invalid Range Header")
 
-    if start >= file_size or end >= file_size or start > end:
+    if not start_str:
+        suffix_length = int(end_str)
+        if suffix_length <= 0:
+            raise HTTPException(status_code=416, detail="Invalid Range Header")
+        start = max(file_size - suffix_length, 0)
+        end = file_size - 1
+    else:
+        start = int(start_str)
+        end = int(end_str) if end_str else file_size - 1
+        end = min(end, file_size - 1)
+
+    if start >= file_size or start > end:
         headers = {
             "Content-Range": f"bytes */{file_size}",
             "Accept-Ranges": "bytes"

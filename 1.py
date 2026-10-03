@@ -15,8 +15,8 @@ headers = {
 def get_response(url, params=None):
     """发送请求，并增加详细的错误捕获"""
     try:
-        # 增加 timeout 参数，防止请求卡死，并关闭SSL证书验证作为一种诊断手段
-        response = requests.get(url=url, params=params, headers=headers, timeout=10, verify=False)
+        # 增加 timeout 参数，防止请求长时间卡死
+        response = requests.get(url=url, params=params, headers=headers, timeout=10)
         response.raise_for_status()  # 如果请求返回的状态码不是2xx, 则引发HTTPError
         return response
     except requests.exceptions.RequestException as e:
@@ -119,11 +119,14 @@ def save_video(name, audio_url, video_url):
 def merge_audio_video(name):
     """音视频合并"""
     output_name = f"A_{name}.mp4"
-    command = f"ffmpeg -i \"{name}.mp4\" -i \"{name}.mp3\" -c copy \"{output_name}\""
+    command = [
+        'ffmpeg', '-i', f'{name}.mp4', '-i', f'{name}.mp3',
+        '-c', 'copy', output_name
+    ]
     print(f"正在为 {name} 执行合成命令...")
     try:
         # 使用 -loglevel error 来减少不必要的ffmpeg输出
-        subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+        subprocess.run(command, shell=False, check=True, capture_output=True, text=True)
         print(f"{name} 视频合成完成，输出为 {output_name}")
         os.remove(f"{name}.mp3")
         os.remove(f"{name}.mp4")
@@ -136,9 +139,6 @@ def merge_audio_video(name):
 
 
 if __name__ == '__main__':
-    # 在发起请求前，禁用一下requests库在关闭证书验证时显示的警告信息
-    requests.packages.urllib3.disable_warnings()
-    
     bvid = input("请输入Bilibili视频的BV号: ")
     cids = []
     pages = []
