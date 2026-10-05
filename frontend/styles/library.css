@@ -1,0 +1,3 @@
+.library-section, .library-toolbar, .video-toolbar { container-type: inline-size; }
+.library-toolbar, .video-toolbar { max-width: 1180px; margin-inline: auto; }
+

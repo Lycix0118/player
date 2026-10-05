@@ -1,0 +1,3 @@
+.settings-content { max-width: 860px; margin-inline: auto; }
+.settings-section + .settings-section { margin-top: var(--space-xl); }
+

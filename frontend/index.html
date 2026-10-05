@@ -17,11 +17,17 @@
 
     <!-- 预加载关键资源 -->
     <link rel="preload" href="styles.css?v=20261002-cute" as="style">
-    <link rel="preload" href="app.js?v=20261002-cute" as="script">
+    <link rel="preload" href="js/main.js?v=20261005-modular" as="script" crossorigin>
 
     <title>🎬 儿童视频播放器</title>
     <!-- Plyr CSS (Local for LAN/Offline) -->
     <link rel="stylesheet" href="vendor/plyr.css" />
+    <link rel="stylesheet" href="styles/tokens.css">
+    <link rel="stylesheet" href="styles/base.css">
+    <link rel="stylesheet" href="styles/layout.css">
+    <link rel="stylesheet" href="styles/library.css">
+    <link rel="stylesheet" href="styles/settings.css">
+    <link rel="stylesheet" href="styles/player.css">
     <link rel="stylesheet" href="styles.css?v=20261002-cute">
     <link rel="icon" href="icon-192x192.png">
     <link rel="apple-touch-icon" href="icon-192x192.png">
@@ -219,6 +225,6 @@
 
     <!-- Plyr JavaScript (Local for LAN/Offline) -->
     <script src="vendor/plyr.js"></script>
-    <script src="app.js?v=20261002-cute"></script>
+    <script type="module" src="js/main.js?v=20261005-modular"></script>
 </body>
 </html>

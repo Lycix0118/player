@@ -1,0 +1,16 @@
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    font-family: 'Microsoft YaHei', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
+    background: var(--gray-50);
+    color: var(--gray-800);
+    line-height: 1.5;
+}
+
+button, input, textarea, select { font: inherit; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+    outline: 3px solid var(--coral-red);
+    outline-offset: 2px;
+}
+

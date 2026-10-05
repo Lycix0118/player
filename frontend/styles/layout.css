@@ -1,0 +1,4 @@
+.screen { position: fixed; inset: 0; overflow-y: auto; }
+.screen.hidden { display: none !important; }
+.content { width: min(100% - 32px, 1180px); margin: 0 auto; }
+

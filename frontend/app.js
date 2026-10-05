@@ -1,6 +1,17 @@
-// 应用状态管理
-class VideoPlayerApp {
+import { ApiClient } from './api/client.js';
+import { createAppState } from './state/app-state.js';
+import { createSettingsState, updateSetting as persistSetting } from './state/settings-state.js';
+import { ScreenRouter } from './views/screen-router.js';
+import { createToast } from './components/toast.js';
+import { escapeHtml as escapeHtmlValue } from './utils/dom.js';
+
+// 兼容迁移层：业务方法按功能逐步拆到 views/api 模块，暂时保留既有渲染行为。
+export class VideoPlayerApp {
     constructor() {
+        this.state = createAppState();
+        this.api = new ApiClient(window.location.origin);
+        this.router = new ScreenRouter({ onLeavePlayer: () => this.clearVideoPlayer() });
+        this.notify = createToast();
         this.currentScreen = 'loading';
         this.currentFolder = null;
         this.currentVideo = null;
@@ -16,7 +27,7 @@ class VideoPlayerApp {
         this.foldersLoaded = false;
         this.loadStartTime = Date.now();
         this.appEntered = false;
-        this.settings = this.loadSettings();
+        this.settings = createSettingsState();
         
         this.init();
     }
@@ -30,13 +41,7 @@ class VideoPlayerApp {
     }
 
     escapeHtml(value) {
-        return String(value ?? '').replace(/[&<>"']/g, (character) => ({
-            '&': '&amp;',
-            '<': '&lt;',
-            '>': '&gt;',
-            '"': '&quot;',
-            "'": '&#39;'
-        }[character]));
+        return escapeHtmlValue(value);
     }
 
     bindEvents() {
@@ -71,14 +76,11 @@ class VideoPlayerApp {
     }
 
     loadSettings() {
-        try {
-            return { autoplay: false, subtitles: true, theme: 'candy', ...JSON.parse(localStorage.getItem('player-settings') || '{}') };
-        } catch (error) { return { autoplay: false, subtitles: true, theme: 'candy' }; }
+        return createSettingsState();
     }
 
     updateSetting(key, value) {
-        this.settings[key] = value;
-        localStorage.setItem('player-settings', JSON.stringify(this.settings));
+        this.settings = persistSetting(this.settings, key, value);
         if (key === 'theme') this.applySettings();
     }
 
@@ -152,24 +154,9 @@ class VideoPlayerApp {
 
     showScreen(screenName) {
         // 如果正在离开播放器屏幕，彻底停止并清理视频播放
-        if (this.currentScreen === 'player' && screenName !== 'player') {
-            this.clearVideoPlayer();
-        }
-        
-        // 隐藏应用主要内容屏幕
-        ['folders', 'videos', 'player', 'settings'].forEach(name => {
-            const screen = document.getElementById(`${name}-screen`);
-            if (screen) {
-                screen.classList.add('hidden');
-            }
-        });
-        
-        // 显示目标屏幕
-        const targetScreen = document.getElementById(`${screenName}-screen`);
-        if (targetScreen) {
-            targetScreen.classList.remove('hidden');
-            this.currentScreen = screenName;
-        }
+        this.router.show(screenName);
+        this.currentScreen = this.router.current;
+        this.state.screen = this.currentScreen;
     }
 
     async loadFolders(path = '') {
@@ -869,8 +856,3 @@ class VideoPlayerApp {
     }
 
 }
-
-// 启动应用
-document.addEventListener('DOMContentLoaded', () => {
-    window.videoPlayerApp = new VideoPlayerApp();
-});

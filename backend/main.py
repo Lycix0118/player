@@ -18,96 +18,63 @@ from pathlib import Path
 import asyncio
 import aiohttp
 from typing import Optional, Dict, List, Any
-import random
 import threading
 import uuid
 
-# 兼容 Windows 控制台 UTF-8 输出
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
-    except Exception:
-        pass
-
-# 导入配置
 try:
-    import config
-    BILIBILI_COOKIE = getattr(config, "BILIBILI_COOKIE", "")
-    MAX_CACHE_SIZE_MB = int(getattr(config, "MAX_CACHE_SIZE_MB", 700))
-    TARGET_CACHE_SIZE_MB = int(getattr(config, "TARGET_CACHE_SIZE_MB", 500))
-    MIN_FREE_DISK_MB = int(getattr(config, "MIN_FREE_DISK_MB", 800))
+    from .filesystem import ensure_directories, safe_resolve_path
+    from .http_client import (
+        HEADERS,
+        close_http_session,
+        get_download_lock,
+        get_http_session,
+        limited_get,
+        limited_get_sync,
+    )
+    from .settings import (
+        BILIBILI_COOKIE,
+        COVERS_DIR,
+        FRONTEND_DIR,
+        MAX_CACHE_SIZE_MB,
+        MIN_FREE_DISK_MB,
+        STATE_FILE,
+        SUBTITLES_DIR,
+        TARGET_CACHE_SIZE_MB,
+        VIDEOS_DIR,
+        log_startup_configuration,
+        set_bilibili_cookie,
+    )
 except ImportError:
-    BILIBILI_COOKIE = os.getenv("BILIBILI_COOKIE", "")
-    MAX_CACHE_SIZE_MB = int(os.getenv("MAX_CACHE_SIZE_MB", "700"))
-    TARGET_CACHE_SIZE_MB = int(os.getenv("TARGET_CACHE_SIZE_MB", "500"))
-    MIN_FREE_DISK_MB = int(os.getenv("MIN_FREE_DISK_MB", "800"))
+    from filesystem import ensure_directories, safe_resolve_path
+    from http_client import (
+        HEADERS,
+        close_http_session,
+        get_download_lock,
+        get_http_session,
+        limited_get,
+        limited_get_sync,
+    )
+    from settings import (
+        BILIBILI_COOKIE,
+        COVERS_DIR,
+        FRONTEND_DIR,
+        MAX_CACHE_SIZE_MB,
+        MIN_FREE_DISK_MB,
+        STATE_FILE,
+        SUBTITLES_DIR,
+        TARGET_CACHE_SIZE_MB,
+        VIDEOS_DIR,
+        log_startup_configuration,
+        set_bilibili_cookie,
+    )
 
-if not BILIBILI_COOKIE:
-    print("提示: 未配置B站Cookie，将以访客身份运行（画质最高480P，且无法解析字幕）")
-elif "SESSDATA=" not in BILIBILI_COOKIE:
-    print("【画质提醒】检测到 config.py 中已填 Cookie，但缺少核心凭证 SESSDATA！")
-    print("       B站会将此会话视为未登录访客，视频流将被限制在 480P。")
-    print("       请在 config.py 中补充 SESSDATA=xxx; 以解锁 1080P/720P 高清画质。")
-else:
-    print("【配置成功】已加载含 SESSDATA 的 B站登录 Cookie，支持高清流(1080P/720P)与字幕解析。")
-
-print(f"[磁盘策略] 视频缓存上限: {MAX_CACHE_SIZE_MB}MB | 目标保留水位: {TARGET_CACHE_SIZE_MB}MB | 磁盘底线预警: {MIN_FREE_DISK_MB}MB")
-
-
-
-# --- Configuration ---
-BASE_DIR = Path(__file__).resolve().parent.parent
-VIDEOS_DIR = BASE_DIR / "videos"
-FRONTEND_DIR = BASE_DIR / "frontend"
-COVERS_DIR = BASE_DIR / "covers"  # 封面缓存目录
-SUBTITLES_DIR = BASE_DIR / "subtitles"  # 字幕缓存目录
-STATE_FILE = BASE_DIR / ".player_state.json"
+log_startup_configuration()
 
 # Download tasks are transient; watch progress is persisted in STATE_FILE.
 _download_tasks: Dict[str, Dict] = {}
 _progress_lock = asyncio.Lock()
 
-def safe_resolve_path(base_dir: Path, user_path: str) -> Optional[Path]:
-    """安全解析路径，严格防止目录穿越（Path Traversal）"""
-    try:
-        resolved_base = base_dir.resolve()
-        clean_path = user_path.strip().lstrip("/\\")
-        target = (resolved_base / clean_path).resolve()
-        if target.is_relative_to(resolved_base):
-            return target
-    except Exception:
-        pass
-    return None
-
 # --- Bilibili Downloader Logic ---
-
-HEADERS = {
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'referer': 'https://www.bilibili.com/'
-}
-
-# 全局异步HTTP客户端与生命周期
-_http_session: Optional[aiohttp.ClientSession] = None
-
-async def get_http_session() -> aiohttp.ClientSession:
-    """获取全局HTTP会话（动态绑定当前事件循环）"""
-    global _http_session
-    loop = asyncio.get_running_loop()
-    if _http_session is None or _http_session.closed or getattr(_http_session, '_loop', None) != loop:
-        timeout = aiohttp.ClientTimeout(total=25, connect=10)
-        _http_session = aiohttp.ClientSession(
-            headers=HEADERS,
-            timeout=timeout
-        )
-    return _http_session
-
-async def close_http_session():
-    """关闭HTTP会话"""
-    global _http_session
-    if _http_session and not _http_session.closed:
-        await _http_session.close()
-        _http_session = None
 
 # --- 磁盘空间与视频缓存 LRU 管理 ---
 _cache_cleanup_lock = threading.Lock()
@@ -277,9 +244,7 @@ def optimize_existing_videos_faststart_bg():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 启动阶段：确保目录存在
-    VIDEOS_DIR.mkdir(exist_ok=True)
-    COVERS_DIR.mkdir(exist_ok=True)
-    SUBTITLES_DIR.mkdir(exist_ok=True)
+    ensure_directories(VIDEOS_DIR, COVERS_DIR, SUBTITLES_DIR)
 
     # 启动时清理孤儿临时分片并执行一次缓存水位检查
     clean_orphan_temp_files(force_all=True)
@@ -353,144 +318,6 @@ def set_cached(key: str, value: Any) -> None:
         for k in list(_video_parts_cache.keys())[:150]:
             _video_parts_cache.pop(k, None)
     _video_parts_cache[key] = value
-
-# --- 动态事件循环感知的异步原语管理 ---
-_MAX_CONCURRENT_OUTBOUND = int(os.getenv("OUTBOUND_MAX_CONCURRENCY", "8"))
-_MAX_QPS = float(os.getenv("OUTBOUND_MAX_QPS", "6"))
-_MAX_COOLDOWN_SECONDS = int(os.getenv("OUTBOUND_MAX_COOLDOWN", "300"))
-
-_active_loop = None
-_outbound_sem = None
-_outbound_lock = None
-_global_download_lock = None
-_download_locks: Dict[str, asyncio.Lock] = {}
-_next_earliest_ts = 0.0
-
-def _ensure_async_primitives():
-    """确保异步信号量和锁绑定到当前正在运行的事件循环"""
-    global _active_loop, _outbound_sem, _outbound_lock, _global_download_lock, _download_locks
-    loop = asyncio.get_running_loop()
-    if _active_loop != loop:
-        _active_loop = loop
-        _outbound_sem = asyncio.Semaphore(_MAX_CONCURRENT_OUTBOUND)
-        _outbound_lock = asyncio.Lock()
-        _global_download_lock = asyncio.Lock()
-        _download_locks = {}
-
-async def get_download_lock(key: str) -> asyncio.Lock:
-    _ensure_async_primitives()
-    async with _global_download_lock:
-        if key not in _download_locks:
-            if len(_download_locks) > 300:
-                for k in list(_download_locks.keys())[:100]:
-                    if not _download_locks[k].locked():
-                        _download_locks.pop(k, None)
-            _download_locks[key] = asyncio.Lock()
-        return _download_locks[key]
-
-_sync_lock = threading.Lock()
-_sync_next_earliest_ts = 0.0
-_cooldowns: Dict[str, float] = {}
-
-def _endpoint_key(url: str) -> str:
-    try:
-        from urllib.parse import urlparse
-        p = urlparse(url)
-        parts = p.path.strip('/').split('/')
-        head = '/'.join(parts[:2]) if parts else ''
-        return f"{p.scheme}://{p.netloc}/{head}"
-    except Exception:
-        return url
-
-def _in_cooldown(url: str) -> bool:
-    now = time.monotonic()
-    key = _endpoint_key(url)
-    until = _cooldowns.get(key, 0.0)
-    return now < until
-
-def _set_cooldown(url: str, base_seconds: float) -> None:
-    now = time.monotonic()
-    key = _endpoint_key(url)
-    current = _cooldowns.get(key, 0.0)
-    target = now + min(base_seconds, _MAX_COOLDOWN_SECONDS)
-    if target > current:
-        if len(_cooldowns) > 200:
-            for k in list(_cooldowns.keys())[:50]:
-                if _cooldowns[k] < now:
-                    _cooldowns.pop(k, None)
-        _cooldowns[key] = target
-
-def _jitter(seconds: float) -> float:
-    delta = seconds * 0.2
-    return max(0.0, seconds + random.uniform(-delta, delta))
-
-async def _await_global_qps_window():
-    global _next_earliest_ts
-    _ensure_async_primitives()
-    async with _outbound_lock:
-        now = time.monotonic()
-        min_gap = 1.0 / max(_MAX_QPS, 0.0001)
-        wait = max(0.0, _next_earliest_ts - now)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        _next_earliest_ts = time.monotonic() + _jitter(min_gap)
-
-async def limited_get(url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None, retries: int = 3) -> Optional[aiohttp.ClientResponse]:
-    """带并发限制、QPS 间隔、退避与冷却的异步 GET（aiohttp）。"""
-    if _in_cooldown(url):
-        return None
-    _ensure_async_primitives()
-    session = await get_http_session()
-    backoff = 0.5
-    for attempt in range(retries):
-        async with _outbound_sem:
-            await _await_global_qps_window()
-            try:
-                resp = await session.get(url, params=params, headers=headers)
-                if resp.status == 200:
-                    return resp
-                if resp.status in (429, 403):
-                    _set_cooldown(url, 60.0 * (2 ** attempt))
-                    await resp.release()
-                    return None
-                if not (500 <= resp.status < 600):
-                    await resp.release()
-                    return None
-            except (aiohttp.ClientError, asyncio.TimeoutError):
-                pass
-        await asyncio.sleep(_jitter(backoff))
-        backoff = min(backoff * 2, 8.0)
-    return None
-
-def limited_get_sync(url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None, timeout: int = 15, retries: int = 3):
-    """同步路径的受限 GET（requests），主要用于线程池中的下载/检测操作。"""
-    if _in_cooldown(url):
-        return None
-    backoff = 0.5
-    for attempt in range(retries):
-        with _sync_lock:
-            global _sync_next_earliest_ts
-            now = time.monotonic()
-            min_gap = 1.0 / max(_MAX_QPS, 0.0001)
-            wait = max(0.0, _sync_next_earliest_ts - now)
-            if wait > 0:
-                time.sleep(wait)
-            _sync_next_earliest_ts = time.monotonic() + _jitter(min_gap)
-        try:
-            resp = requests.get(url, params=params, headers=headers or HEADERS, timeout=timeout)
-            status = resp.status_code
-            if status == 200:
-                return resp
-            if status in (429, 403):
-                _set_cooldown(url, 60.0 * (2 ** attempt))
-                return None
-            if not (500 <= status < 600):
-                return None
-        except requests.exceptions.RequestException:
-            pass
-        time.sleep(_jitter(backoff))
-        backoff = min(backoff * 2, 8.0)
-    return None
 
 # WBI签名相关常量和函数
 MIXIN_KEY_ENC_TAB = [
@@ -1167,6 +994,7 @@ async def update_cookie(request: Request):
     if not cookie or len(cookie) > 20000:
         raise HTTPException(status_code=400, detail="Invalid cookie")
     BILIBILI_COOKIE = cookie
+    set_bilibili_cookie(cookie)
     return {"success": True, "has_cookie": True}
 
 
