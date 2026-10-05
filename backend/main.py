@@ -272,6 +272,9 @@ except locale.Error:
 
 # 挂载前端静态文件服务
 app.mount("/frontend", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend")
+# 模块化前端资源使用独立静态挂载，避免 catch-all 路由把缺失模块回退成 index.html。
+app.mount("/js", StaticFiles(directory=str(FRONTEND_DIR / "js")), name="frontend-js")
+app.mount("/styles", StaticFiles(directory=str(FRONTEND_DIR / "styles")), name="frontend-styles")
 
 # --- CORS Middleware ---
 app.add_middleware(
@@ -1419,6 +1422,9 @@ async def serve_frontend_files(file_path: str):
             }
             return FileResponse(file, headers=headers)
         return FileResponse(file)
+
+    if file_path.endswith(('.js', '.css', '.map')):
+        raise HTTPException(status_code=404, detail="Frontend asset not found")
 
     index_file = FRONTEND_DIR / "index.html"
     if index_file.exists():
