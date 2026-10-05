@@ -9,6 +9,9 @@ class VideoPlayerApp {
         this.currentPath = [];  // 当前路径栈 ['folder1', 'subfolder1']
         this.folderHistory = []; // 导航历史
         this.player = null; // Plyr播放器实例
+        this.currentVideos = [];
+        this.watchProgress = {};
+        this.downloadPoll = null;
         // 启动与就绪状态
         this.foldersLoaded = false;
         this.loadStartTime = Date.now();
@@ -21,9 +24,6 @@ class VideoPlayerApp {
     async init() {
         // 绑定事件监听器
         this.bindEvents();
-        
-        // 注册 Service Worker
-        this.registerServiceWorker();
         
         // 加载文件夹数据
         this.loadFolders();
@@ -48,6 +48,11 @@ class VideoPlayerApp {
         document.getElementById('back-to-videos').addEventListener('click', () => {
             this.showScreen('videos');
         });
+        document.getElementById('refresh-library')?.addEventListener('click', () => this.loadFolders(this.currentPath.join('/')));
+        document.getElementById('video-search')?.addEventListener('input', () => this.renderVideos(this.currentVideos));
+        document.getElementById('video-sort')?.addEventListener('change', () => this.renderVideos(this.currentVideos));
+        document.getElementById('player-prev')?.addEventListener('click', () => this.playRelative(-1));
+        document.getElementById('player-next')?.addEventListener('click', () => this.playRelative(1));
 
         // 返回上级文件夹按钮
         document.getElementById('back-to-parent').addEventListener('click', () => {
@@ -55,7 +60,6 @@ class VideoPlayerApp {
         });
 
         document.getElementById('open-settings').addEventListener('click', () => this.openSettings());
-        document.getElementById('install-app').addEventListener('click', () => this.installApp());
         document.getElementById('back-from-settings').addEventListener('click', () => this.showScreen('folders'));
         document.getElementById('save-cookie').addEventListener('click', () => this.saveCookie());
         document.getElementById('toggle-cookie-visibility').addEventListener('click', () => this.toggleCookieVisibility());
@@ -64,46 +68,6 @@ class VideoPlayerApp {
         document.getElementById('setting-subtitles').addEventListener('change', (event) => this.updateSetting('subtitles', event.target.checked));
         document.getElementById('theme-select').addEventListener('change', (event) => this.updateSetting('theme', event.target.value));
         this.applySettings();
-        this.updateInstallButton();
-    }
-
-    async installApp() {
-        if (this.isAppInstalled()) {
-            this.showError('应用已经添加到桌面');
-            return;
-        }
-
-        if (!deferredPrompt) {
-            this.showError('当前浏览器暂不支持自动添加，请打开浏览器菜单选择“安装应用”或“添加到主屏幕”');
-            return;
-        }
-
-        const installPrompt = deferredPrompt;
-        deferredPrompt = null;
-        installPrompt.prompt();
-
-        try {
-            await installPrompt.userChoice;
-        } catch (error) {
-            console.log('PWA 安装结果读取失败:', error);
-        }
-        this.updateInstallButton();
-    }
-
-    isAppInstalled() {
-        return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
-    }
-
-    updateInstallButton() {
-        const button = document.getElementById('install-app');
-        if (!button) return;
-
-        if (this.isAppInstalled()) {
-            button.textContent = '✓ 已添加';
-            button.disabled = true;
-            button.title = '应用已添加到桌面';
-            button.setAttribute('aria-label', '应用已添加到桌面');
-        }
     }
 
     loadSettings() {
@@ -221,6 +185,8 @@ class VideoPlayerApp {
             this.currentPath = (normalizedPath && normalizedPath.trim()) ? normalizedPath.split('/') : [];
             
             this.renderFolders(folders);
+            await this.loadAllProgress(folders);
+            this.renderContinueWatching();
             this.updateBreadcrumb();
             this.updateBackButton();
             // 数据就绪标记
@@ -234,9 +200,49 @@ class VideoPlayerApp {
         }
     }
 
+    async loadAllProgress(folders) {
+        const playable = (folders || []).filter(folder => typeof folder === 'object' && folder.has_list_file);
+        const results = await Promise.all(playable.map(async folder => {
+            try {
+                const [videosResponse, progressResponse] = await Promise.all([
+                    fetch(`${this.apiBase}/api/folders/${encodeURIComponent(folder.path)}`),
+                    fetch(`${this.apiBase}/api/progress/${encodeURIComponent(folder.path)}`)
+                ]);
+                const videos = videosResponse.ok ? await videosResponse.json() : [];
+                const progress = progressResponse.ok ? await progressResponse.json() : {};
+                return videos.map(video => ({ ...video, folder_path: folder.path, progress: progress[`${folder.path}|${video.bvid}|${video.page}`] || null }));
+            } catch (_) { return []; }
+        }));
+        this.libraryVideos = results.flat();
+    }
+
+    renderContinueWatching() {
+        const section = document.getElementById('continue-section');
+        const list = document.getElementById('continue-list');
+        if (!section || !list) return;
+        const items = (this.libraryVideos || []).filter(video => video.progress && !video.progress.completed && video.progress.position > 5).sort((a, b) => (b.progress.updated_at || 0) - (a.progress.updated_at || 0)).slice(0, 6);
+        section.classList.toggle('hidden', items.length === 0);
+        if (!items.length) return;
+        document.getElementById('continue-count').textContent = `${items.length} 个未完成视频`;
+        list.innerHTML = items.map(video => `<button class="continue-item" data-folder="${this.escapeHtml(video.folder_path)}" data-bvid="${this.escapeHtml(video.bvid)}" data-page="${video.page}"><span class="continue-icon">▶</span><span class="continue-copy"><strong>${this.escapeHtml(video.title)}</strong><small>${this.escapeHtml(video.folder_path)} · 已观看 ${Math.round(video.progress.position / Math.max(video.progress.duration, 1) * 100)}%</small></span></button>`).join('');
+        list.querySelectorAll('.continue-item').forEach(button => button.addEventListener('click', async () => {
+            const videos = await this.fetchVideos(button.dataset.folder);
+            const video = videos.find(item => item.bvid === button.dataset.bvid && String(item.page) === button.dataset.page);
+            if (video) this.playVideo(video, button.dataset.folder);
+        }));
+    }
+
+    async fetchVideos(folderPath) {
+        const response = await fetch(`${this.apiBase}/api/folders/${encodeURIComponent(folderPath)}`);
+        if (!response.ok) throw new Error('视频列表加载失败');
+        return response.json();
+    }
+
     renderFolders(folders) {
         const container = document.getElementById('folders-list');
         container.innerHTML = '';
+        const summary = document.getElementById('library-summary');
+        if (summary) summary.textContent = folders.length ? `${folders.length} 个合集，选择一个开始播放` : '还没有视频合集';
 
         if (folders.length === 0) {
             container.innerHTML = `
@@ -342,6 +348,12 @@ class VideoPlayerApp {
             }
             
             const videos = await response.json();
+            try {
+                const progressResponse = await fetch(`${this.apiBase}/api/progress/${encodeURIComponent(folderPath)}`);
+                const progress = progressResponse.ok ? await progressResponse.json() : {};
+                videos.forEach(video => { video.progress = progress[`${folderPath}|${video.bvid}|${video.page}`] || null; });
+            } catch (_) {}
+            this.currentVideos = videos;
             this.renderVideos(videos);
             this.showScreen('videos');
 
@@ -357,7 +369,12 @@ class VideoPlayerApp {
         const container = document.getElementById('videos-list');
         container.innerHTML = '';
 
-        if (videos.length === 0) {
+        const query = (document.getElementById('video-search')?.value || '').trim().toLowerCase();
+        const sort = document.getElementById('video-sort')?.value || 'index';
+        const visibleVideos = videos.filter(video => !query || String(video.title || '').toLowerCase().includes(query));
+        visibleVideos.sort((a, b) => sort === 'title' ? String(a.title).localeCompare(String(b.title), 'zh-CN') : sort === 'progress' ? (b.progress?.updated_at || 0) - (a.progress?.updated_at || 0) : (a.index || 0) - (b.index || 0));
+
+        if (visibleVideos.length === 0) {
             container.innerHTML = `
                 <div class="empty-state">
                     <h3>📺 暂无视频</h3>
@@ -367,7 +384,7 @@ class VideoPlayerApp {
             return;
         }
 
-        videos.forEach((video, index) => {
+        visibleVideos.forEach((video, index) => {
             const videoElement = document.createElement('div');
             videoElement.className = 'video-item';
             const videoIndex = video.index || (index + 1);
@@ -382,6 +399,9 @@ class VideoPlayerApp {
                 ? `<img src="${this.escapeHtml(this.apiBase + video.cover_url)}" alt="视频封面" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"><div class="placeholder-icon" style="display: none;">🎬</div>`
                 : '<div class="placeholder-icon">🎬</div>';
 
+            const progress = video.progress;
+            const progressPercent = progress && progress.duration ? Math.min(100, Math.round(progress.position / progress.duration * 100)) : 0;
+            const progressHTML = progressPercent > 0 ? `<div class="video-progress"><span style="width:${progressPercent}%"></span></div><div class="video-progress-label">${progress.completed ? '已看完' : `已观看 ${progressPercent}%`}</div>` : '';
             videoElement.innerHTML = `
                 <div class="video-thumbnail ${hasCover ? '' : 'loading'}">
                     ${thumbnailHTML}
@@ -390,12 +410,13 @@ class VideoPlayerApp {
                     <div class="video-title">${this.escapeHtml(video.title)}</div>
                     <div class="video-page">第 ${this.escapeHtml(videoIndex)} 集</div>
                     ${video.duration ? `<div class="video-duration">${this.escapeHtml(this.formatDuration(video.duration))}</div>` : ''}
+                    ${progressHTML}
                 </div>
             `;
 
             // 点击和键盘事件
             const handleActivation = () => {
-                this.playVideo(video);
+                this.playVideo(video, this.currentFolder);
             };
 
             videoElement.addEventListener('click', handleActivation);
@@ -503,8 +524,10 @@ class VideoPlayerApp {
         return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
     }
 
-    async playVideo(video) {
+    async playVideo(video, folderPath = this.currentFolder) {
         try {
+            this.clearVideoPlayer();
+            this.currentFolder = folderPath;
             this.currentVideo = video;
             const videoIndex = video.index || video.page;
             const titleEl = document.getElementById('video-title');
@@ -512,32 +535,17 @@ class VideoPlayerApp {
             if (titleEl) titleEl.textContent = video.title;
             if (badgeEl) badgeEl.textContent = `第 ${videoIndex} 集`;
 
-            // 先清空播放器
-            this.clearVideoPlayer();
-
             this.showScreen('player');
             this.showDownloadProgress();
             
-            // 请求播放视频，带上 bvid 与 page 参数以支持多 BV 列表
-            const playUrl = `${this.apiBase}/api/play/${encodeURIComponent(this.currentFolder)}/${videoIndex}?bvid=${encodeURIComponent(video.bvid || '')}&page=${video.page || 1}`;
-            const response = await fetch(playUrl);
-            
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
-            
-            const result = await response.json();
-            
-            if (result.status === 'ready') {
-                this.loadVideoPlayer(result.video_url);
-                // 设置字幕按钮状态，使用API返回的字幕信息
-                this.setupSubtitleButton({
-                    ...video,
-                    has_subtitle: result.has_subtitle,
-                    subtitle_url: result.subtitle_url
-                });
-            } else {
-                this.showError('视频正在准备中，请稍后重试');
+            const response = await fetch(`${this.apiBase}/api/download/${encodeURIComponent(this.currentFolder)}/${videoIndex}?bvid=${encodeURIComponent(video.bvid || '')}&page=${video.page || 1}`, { method: 'POST' });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const task = await response.json();
+            if (task.status === 'ready') {
+                this.loadVideoPlayer(task.video_url);
+                await this.setupSubtitleForVideo(video);
+            } else if (task.task_id) {
+                await this.pollDownloadTask(task.task_id, video);
             }
             
         } catch (error) {
@@ -547,7 +555,47 @@ class VideoPlayerApp {
         }
     }
 
+    async setupSubtitleForVideo(video) {
+        try {
+            const response = await fetch(`${this.apiBase}/api/subtitle/${encodeURIComponent(this.currentFolder)}/${video.index || video.page}?bvid=${encodeURIComponent(video.bvid || '')}&page=${video.page || 1}`);
+            if (response.ok) {
+                const result = await response.json();
+                this.setupSubtitleButton({ ...video, has_subtitle: true, subtitle_url: result.subtitle_url });
+            } else this.setupSubtitleButton(video);
+        } catch (_) { this.setupSubtitleButton(video); }
+    }
+
+    async pollDownloadTask(taskId, video) {
+        const hint = document.getElementById('loader-hint');
+        while (true) {
+            const response = await fetch(`${this.apiBase}/api/download/tasks/${taskId}`);
+            if (!response.ok) throw new Error('download task unavailable');
+            const task = await response.json();
+            const fill = document.getElementById('progress-fill');
+            const text = document.getElementById('progress-text');
+            if (fill) fill.style.width = `${task.progress || 0}%`;
+            if (text) text.textContent = `${task.progress || 0}%`;
+            if (hint) hint.textContent = task.stage || '正在准备播放，请稍候';
+            if (task.status === 'ready') {
+                this.loadVideoPlayer(task.video_url || `/static/${this.currentFolder}/${video.bvid}_p${video.page}.mp4`);
+                await this.setupSubtitleForVideo(video);
+                return;
+            }
+            if (task.status === 'failed') throw new Error(task.error || 'download failed');
+            await new Promise(resolve => setTimeout(resolve, 800));
+        }
+    }
+
+    playRelative(offset) {
+        if (!this.currentVideo || !this.currentVideos?.length) return;
+        const index = this.currentVideos.findIndex(video => video.bvid === this.currentVideo.bvid && video.page === this.currentVideo.page);
+        const target = this.currentVideos[index + offset];
+        if (target) this.playVideo(target, this.currentFolder);
+        else this.showError(offset > 0 ? '已经是最后一集' : '已经是第一集');
+    }
+
     clearVideoPlayer() {
+        this.saveCurrentProgress(true);
         // 销毁现有的Plyr实例
         if (this.player) {
             try { this.player.destroy(); } catch (_) {}
@@ -604,6 +652,17 @@ class VideoPlayerApp {
         this.hideDownloadProgress();
     }
 
+    async saveCurrentProgress(force = false) {
+        const media = this.player?.media || document.getElementById('video-player');
+        if (!media || !this.currentVideo || !this.currentFolder) return;
+        const position = Number(media.currentTime || 0);
+        const duration = Number(media.duration || this.currentVideo.duration || 0);
+        if (!position && !duration) return;
+        try {
+            await fetch(`${this.apiBase}/api/progress`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder_path: this.currentFolder, bvid: this.currentVideo.bvid, page: this.currentVideo.page, position, duration, completed: duration > 0 && position / duration >= 0.92 }) });
+        } catch (_) {}
+    }
+
     showDownloadProgress() {
         const container = document.getElementById('download-progress');
         const fill = document.getElementById('progress-fill');
@@ -614,25 +673,12 @@ class VideoPlayerApp {
             clearInterval(this.progressInterval);
         }
 
-        let progress = 10;
-        fill.style.width = `${progress}%`;
-        text.textContent = '准备中...';
-
-        // 渐进式平滑进度提示（最高停在 92%，等待后端完成返回）
-        this.progressInterval = setInterval(() => {
-            if (progress < 90) {
-                progress += Math.max(1, (90 - progress) * 0.1);
-                fill.style.width = `${Math.round(progress)}%`;
-                text.textContent = `${Math.round(progress)}%`;
-            }
-        }, 300);
+        fill.style.width = '0%';
+        text.textContent = '0%';
     }
 
     hideDownloadProgress() {
-        if (this.progressInterval) {
-            clearInterval(this.progressInterval);
-            this.progressInterval = null;
-        }
+        if (this.progressInterval) { clearInterval(this.progressInterval); this.progressInterval = null; }
         const fill = document.getElementById('progress-fill');
         const text = document.getElementById('progress-text');
         fill.style.width = '100%';
@@ -762,6 +808,24 @@ class VideoPlayerApp {
 
         this.player.on('pause', () => {
             console.log('暂停播放');
+            this.saveCurrentProgress(true);
+        });
+
+        this.player.on('timeupdate', () => {
+            if (!this._progressSaveAt || Date.now() - this._progressSaveAt > 5000) {
+                this._progressSaveAt = Date.now();
+                this.saveCurrentProgress();
+            }
+        });
+
+        this.player.on('loadedmetadata', () => {
+            const saved = this.currentVideo?.progress;
+            if (saved && saved.position > 5 && saved.position < (this.player.duration || Infinity) - 3) this.player.currentTime = saved.position;
+        });
+
+        this.player.on('ended', () => {
+            this.saveCurrentProgress(true);
+            if (this.settings.autoplay) this.playRelative(1);
         });
 
         // 播放错误处理
@@ -804,36 +868,9 @@ class VideoPlayerApp {
         }
     }
 
-    async registerServiceWorker() {
-        if ('serviceWorker' in navigator) {
-            try {
-                await navigator.serviceWorker.register('./sw.js');
-                console.log('Service Worker 注册成功');
-            } catch (error) {
-                console.log('Service Worker 注册失败:', error);
-            }
-        }
-    }
 }
 
 // 启动应用
 document.addEventListener('DOMContentLoaded', () => {
     window.videoPlayerApp = new VideoPlayerApp();
-});
-
-// PWA 安装提示
-let deferredPrompt;
-
-window.addEventListener('beforeinstallprompt', (e) => {
-    e.preventDefault();
-    deferredPrompt = e;
-
-    window.videoPlayerApp?.updateInstallButton();
-    console.log('PWA 可以安装');
-});
-
-window.addEventListener('appinstalled', () => {
-    console.log('PWA 已安装');
-    deferredPrompt = null;
-    window.videoPlayerApp?.updateInstallButton();
 });

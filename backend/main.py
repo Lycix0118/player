@@ -20,6 +20,7 @@ import aiohttp
 from typing import Optional, Dict, List, Any
 import random
 import threading
+import uuid
 
 # 兼容 Windows 控制台 UTF-8 输出
 if sys.platform == "win32":
@@ -61,6 +62,11 @@ VIDEOS_DIR = BASE_DIR / "videos"
 FRONTEND_DIR = BASE_DIR / "frontend"
 COVERS_DIR = BASE_DIR / "covers"  # 封面缓存目录
 SUBTITLES_DIR = BASE_DIR / "subtitles"  # 字幕缓存目录
+STATE_FILE = BASE_DIR / ".player_state.json"
+
+# Download tasks are transient; watch progress is persisted in STATE_FILE.
+_download_tasks: Dict[str, Dict] = {}
+_progress_lock = asyncio.Lock()
 
 def safe_resolve_path(base_dir: Path, user_path: str) -> Optional[Path]:
     """安全解析路径，严格防止目录穿越（Path Traversal）"""
@@ -851,19 +857,24 @@ async def download_and_cache_subtitle(bvid: str, page: int, cid: int) -> str:
         print(f"下载字幕失败: {e}")
         return ""
 
-def stream_download_file(url: str, output_path: Path, headers: Optional[Dict] = None, chunk_size: int = 128 * 1024) -> None:
+def stream_download_file(url: str, output_path: Path, headers: Optional[Dict] = None, chunk_size: int = 128 * 1024, progress_callback=None) -> None:
     """流式下载大文件到磁盘，避免全量载入内存导致 OOM"""
     req_headers = HEADERS.copy()
     if headers:
         req_headers.update(headers)
     with requests.get(url, headers=req_headers, stream=True, timeout=(10, 60)) as r:
         r.raise_for_status()
+        total = int(r.headers.get('content-length') or 0)
+        downloaded = 0
         with open(output_path, 'wb') as f:
             for chunk in r.iter_content(chunk_size=chunk_size):
                 if chunk:
                     f.write(chunk)
+                    downloaded += len(chunk)
+                    if progress_callback:
+                        progress_callback(downloaded, total)
 
-def download_and_merge(bvid: str, p_info: dict, target_dir: Path) -> str:
+def download_and_merge(bvid: str, p_info: dict, target_dir: Path, progress_callback=None) -> str:
     """
     按需下载音视频流并调用 ffmpeg 合并
     采用分块流式写入磁盘，避免内存溢出；临时文件使用安全前缀并保证清理
@@ -956,8 +967,14 @@ def download_and_merge(bvid: str, p_info: dict, target_dir: Path) -> str:
     temp_video_path = target_dir / f".temp_{bvid}_p{page}_video.mp4"
 
     try:
-        stream_download_file(audio_url, temp_audio_path, headers=req_headers)
-        stream_download_file(video_url, temp_video_path, headers=req_headers)
+        if progress_callback:
+            progress_callback('downloading_audio', 10)
+        audio_callback = (lambda done, total: progress_callback('downloading_audio', 10 + min(20, int(done / total * 20)) if total else 20)) if progress_callback else None
+        stream_download_file(audio_url, temp_audio_path, headers=req_headers, progress_callback=audio_callback)
+        if progress_callback:
+            progress_callback('downloading_video', 30)
+        video_callback = (lambda done, total: progress_callback('downloading_video', 30 + min(55, int(done / total * 55)) if total else 55)) if progress_callback else None
+        stream_download_file(video_url, temp_video_path, headers=req_headers, progress_callback=video_callback)
 
         # 4. 调用 ffmpeg 合并音视频流（关键：追加 -movflags +faststart 将 moov 元数据置顶，支持秒拖进度条）
         command = [
@@ -969,6 +986,8 @@ def download_and_merge(bvid: str, p_info: dict, target_dir: Path) -> str:
             '-y',
             str(merged_temp_path)
         ]
+        if progress_callback:
+            progress_callback('merging', 90)
         subprocess.run(command, shell=False, check=True, capture_output=True, text=True, encoding='utf-8', errors='replace')
         os.replace(merged_temp_path, final_video_path)
     except subprocess.CalledProcessError as e:
@@ -981,6 +1000,92 @@ def download_and_merge(bvid: str, p_info: dict, target_dir: Path) -> str:
         merged_temp_path.unlink(missing_ok=True)
 
     return str(final_video_path)
+
+def _read_player_state() -> Dict:
+    try:
+        if STATE_FILE.exists():
+            data = json.loads(STATE_FILE.read_text(encoding='utf-8'))
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+def _write_player_state(data: Dict) -> None:
+    temp = STATE_FILE.with_suffix('.tmp')
+    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+    os.replace(temp, STATE_FILE)
+
+async def _download_episode_task(task_id: str, folder_path: str, ep: Dict) -> None:
+    task = _download_tasks[task_id]
+    target_folder = safe_resolve_path(VIDEOS_DIR, folder_path)
+    try:
+        await asyncio.to_thread(cleanup_video_cache, 200 * 1024 * 1024)
+        task['status'] = 'downloading'
+        task['stage'] = '准备下载'
+        task['progress'] = 5
+
+        def on_progress(stage, progress):
+            task['stage'] = {'downloading_audio': '下载音频', 'downloading_video': '下载视频', 'merging': '合并视频'}.get(stage, stage)
+            task['progress'] = max(5, min(99, int(progress)))
+
+        await asyncio.to_thread(download_and_merge, ep['bvid'], {
+            'page': ep['page'], 'cid': ep['cid'], 'part': ep['title']
+        }, target_folder, on_progress)
+        task.update(status='ready', stage='已完成', progress=100)
+    except Exception as exc:
+        task.update(status='failed', stage='下载失败', progress=0, error=str(exc))
+
+@app.get("/api/progress/{folder_path:path}")
+async def get_watch_progress(folder_path: str):
+    state = _read_player_state().get('progress', {})
+    prefix = folder_path.strip('/')
+    return {key: value for key, value in state.items() if key.startswith(prefix + '|')}
+
+@app.post("/api/progress")
+async def save_watch_progress(payload: Dict[str, Any]):
+    folder = str(payload.get('folder_path', '')).strip('/')
+    bvid = str(payload.get('bvid', '')).strip()
+    page = int(payload.get('page') or 1)
+    if not folder or not bvid:
+        raise HTTPException(status_code=400, detail='folder_path and bvid are required')
+    key = f'{folder}|{bvid}|{page}'
+    position = max(0, float(payload.get('position') or 0))
+    duration = max(0, float(payload.get('duration') or 0))
+    completed = bool(payload.get('completed')) or (duration > 0 and position / duration >= 0.92)
+    async with _progress_lock:
+        state = _read_player_state()
+        progress = state.setdefault('progress', {})
+        progress[key] = {'folder_path': folder, 'bvid': bvid, 'page': page, 'position': position, 'duration': duration, 'completed': completed, 'updated_at': int(time.time())}
+        await asyncio.to_thread(_write_player_state, state)
+    return progress[key]
+
+@app.post("/api/download/{folder_path:path}/{item_index}")
+async def start_download(folder_path: str, item_index: int, bvid: Optional[str] = Query(None), page: Optional[int] = Query(None)):
+    episodes = await get_folder_episodes_async(folder_path)
+    ep = next((item for item in episodes if bvid and page is not None and item['bvid'] == bvid and item['page'] == page), None)
+    ep = ep or next((item for item in episodes if item.get('index') == item_index), None)
+    if not ep:
+        raise HTTPException(status_code=404, detail='Episode not found')
+    target_folder = safe_resolve_path(VIDEOS_DIR, folder_path)
+    if not target_folder:
+        raise HTTPException(status_code=404, detail='Folder not found')
+    final_path = target_folder / f"{ep['bvid']}_p{ep['page']}.mp4"
+    if final_path.exists():
+        return {'status': 'ready', 'progress': 100, 'video_url': f"/static/{folder_path}/{final_path.name}"}
+    for task_id, task in _download_tasks.items():
+        if task.get('folder_path') == folder_path and task.get('bvid') == ep['bvid'] and task.get('page') == ep['page'] and task.get('status') in {'queued', 'downloading'}:
+            return {'task_id': task_id, **task}
+    task_id = uuid.uuid4().hex
+    _download_tasks[task_id] = {'folder_path': folder_path, 'bvid': ep['bvid'], 'page': ep['page'], 'status': 'queued', 'stage': '排队中', 'progress': 0}
+    asyncio.create_task(_download_episode_task(task_id, folder_path, ep))
+    return {'task_id': task_id, **_download_tasks[task_id]}
+
+@app.get("/api/download/tasks/{task_id}")
+async def get_download_task(task_id: str):
+    task = _download_tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail='Download task not found')
+    return {'task_id': task_id, **task}
 
 # --- API Endpoints ---
 
@@ -1101,14 +1206,17 @@ async def get_videos_details(folder_path: str):
         raise HTTPException(status_code=404, detail=f"Folder '{folder_path}' has no episodes")
 
     detailed_parts = []
-    for ep in episodes:
+    subtitle_flags = await asyncio.gather(*[
+        check_subtitle_availability_async(ep['bvid'], ep['page'], ep['cid']) for ep in episodes
+    ], return_exceptions=True)
+    for ep, subtitle_flag in zip(episodes, subtitle_flags):
         detailed_parts.append({
             "index": ep["index"],
             "page": ep["page"],
             "bvid": ep["bvid"],
             "cover_source": ep.get('cover_source', ''),
             "duration": ep.get('duration', 0),
-            "has_subtitle": False
+            "has_subtitle": subtitle_flag is True
         })
 
     return JSONResponse(content=detailed_parts, headers={"Content-Type": "application/json; charset=utf-8"})

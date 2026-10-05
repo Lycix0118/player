@@ -1388,18 +1388,6 @@ button:focus,
 ::-webkit-scrollbar-thumb:hover {
     background: var(--coral-dark);
 }
-/* PWA 样式优化 */
-@media (display-mode: standalone) {
-    .app-header {
-        padding-top: var(--space-lg); /* 为状态栏留出空间 */
-    }
-
-    body {
-        padding-top: env(safe-area-inset-top);
-        padding-bottom: env(safe-area-inset-bottom);
-    }
-}
-
 /* 打印样式 */
 @media print {
     .app-header,
@@ -1518,26 +1506,12 @@ button:focus,
     transition: all var(--transition-fast);
 }
 .icon-btn:hover { background: var(--yellow-light); transform: rotate(12deg); }
-.install-btn {
-    min-height: 44px;
-    margin-left: var(--space-sm);
-    padding: var(--space-sm) var(--space-md);
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: var(--mint-green);
-    color: var(--white);
-    font-size: var(--text-sm);
-    font-weight: 700;
-    white-space: nowrap;
-    cursor: pointer;
-    transition: all var(--transition-fast);
-    box-shadow: var(--shadow-sm);
-}
-.install-btn:hover { background: var(--mint-dark); transform: translateY(-1px); box-shadow: var(--shadow-md); }
-.install-btn:active { transform: translateY(0); box-shadow: var(--shadow-sm); }
-.install-btn:disabled { background: var(--gray-200); color: var(--gray-600); cursor: default; transform: none; box-shadow: none; }
 .header-spacer { width: 46px; margin-left: auto; }
 .settings-content { max-width: 860px; padding-bottom: var(--space-3xl); }
+.parent-zone-intro { display: flex; align-items: flex-start; gap: var(--space-md); margin-bottom: var(--space-xl); padding: var(--space-lg); background: linear-gradient(135deg, #fff5f3, #ffffff); border: 1px solid #ffd9d3; border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
+.parent-zone-icon { display: grid; place-items: center; flex: 0 0 48px; width: 48px; height: 48px; border-radius: var(--radius-md); background: var(--coral-red); color: var(--white); font-size: 24px; }
+.parent-zone-intro h2 { margin: 2px 0 4px; color: var(--gray-900); font-size: var(--text-xl); }
+.parent-zone-intro p { color: var(--gray-600); font-size: var(--text-sm); }
 .settings-section { margin-bottom: var(--space-xl); animation: fadeInUp .35s ease-out; }
 .settings-section-heading { display: flex; align-items: baseline; gap: var(--space-md); margin-bottom: var(--space-sm); }
 .settings-section-heading h2 { color: var(--gray-800); font-size: var(--text-xl); }
@@ -1568,9 +1542,38 @@ button:focus,
 .settings-select { width: 100%; min-height: 46px; padding: 0 var(--space-md); border: 1px solid var(--gray-300); border-radius: var(--radius-sm); background: var(--gray-50); color: var(--gray-800); font: inherit; }
 .app-version { color: var(--gray-600); font-size: var(--text-sm); }
 @media (max-width: 600px) {
+    .parent-zone-intro { align-items: flex-start; padding: var(--space-md); }
+    .parent-zone-intro h2 { font-size: var(--text-lg); }
     .settings-section-heading { display: block; }
     .settings-section-hint { display: block; margin-top: 2px; }
     .cookie-input-row { flex-direction: column; }
     .settings-action-row { align-items: flex-start; flex-direction: column; }
     .settings-action-row .primary-btn { width: 100%; }
 }
+
+/* Library v1: calm, information-first surfaces for repeat use. */
+.library-section, .library-toolbar, .video-toolbar { max-width: 1180px; margin-left: auto; margin-right: auto; }
+.library-section { margin-top: 8px; margin-bottom: 28px; }
+.section-heading, .library-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
+.section-heading h2 { margin: 2px 0 0; font-size: 24px; color: var(--gray-900); }
+.section-kicker { color: var(--coral-dark); font-size: 13px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.section-meta, .library-summary { color: var(--gray-600); font-size: 14px; }
+.library-summary { margin: 4px 0 0; }
+.continue-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-top: 14px; }
+.continue-item { display: flex; align-items: center; gap: 12px; text-align: left; padding: 14px 16px; border: 1px solid var(--gray-200); border-radius: 10px; background: var(--white); cursor: pointer; transition: border-color .2s, transform .2s, box-shadow .2s; }
+.continue-item:hover { border-color: var(--coral-light); transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.continue-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; color: white; background: var(--coral-red); font-size: 13px; }
+.continue-copy { min-width: 0; display: grid; gap: 4px; }
+.continue-copy strong { overflow: hidden; color: var(--gray-900); text-overflow: ellipsis; white-space: nowrap; }
+.continue-copy small { color: var(--gray-600); }
+.library-toolbar { padding: 14px 0 4px; border-top: 1px solid var(--gray-200); }
+.video-toolbar { display: flex; justify-content: flex-end; gap: 10px; margin: 8px 0 -8px; }
+.search-box { display: flex; align-items: center; gap: 6px; min-width: min(320px, 60vw); padding: 0 12px; border: 1px solid var(--gray-200); border-radius: 8px; background: white; color: var(--gray-600); }
+.search-box input { width: 100%; border: 0; outline: 0; padding: 10px 0; background: transparent; color: var(--gray-900); font: inherit; }
+.video-progress { height: 4px; margin-top: 8px; overflow: hidden; border-radius: 4px; background: var(--gray-200); }
+.video-progress span { display: block; height: 100%; border-radius: inherit; background: var(--coral-red); }
+.video-progress-label { margin-top: 4px; color: var(--gray-600); font-size: 12px; }
+.player-nav-actions { display: flex; gap: 8px; align-items: center; }
+.player-nav-btn { padding: 8px 12px; border: 1px solid rgba(255,255,255,.25); border-radius: 6px; background: rgba(255,255,255,.1); color: white; cursor: pointer; }
+.player-nav-btn:hover { background: rgba(255,255,255,.2); }
+@media (max-width: 680px) { .library-toolbar, .video-toolbar { align-items: stretch; flex-direction: column; } .video-toolbar { margin-top: 16px; } .search-box { min-width: 0; } .player-nav-btn { padding: 6px 8px; font-size: 12px; } }

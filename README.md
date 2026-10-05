@@ -1,8 +1,8 @@
 # 儿童视频播放器（Bilibili）
 
-一个包含后端（FastAPI）与前端（静态页面/PWA）的本地视频播放器工具：
+一个包含后端（FastAPI）与前端静态页面的本地视频播放器工具：
 - 后端负责：目录扫描、分阶段加载分P信息、封面缓存、字幕获取与缓存、按需下载并合并视频音频（ffmpeg）。
-- 前端负责：文件夹浏览、视频列表展示、封面懒加载、播放器（Plyr）与字幕显示、PWA 支持。
+- 前端负责：文件夹浏览、视频列表展示、封面懒加载、播放器（Plyr）与字幕显示。
 
 本项目已进行维护：
 - 清理冗余代码与无用导入；
@@ -21,7 +21,6 @@
   - requirements.txt: 依赖列表
 - frontend/
   - index.html, styles.css, app.js: 前端页面与逻辑
-  - manifest.json, sw.js: PWA 相关
   - icon-192x192.png: 图标
 - videos/: 放置每个专辑（文件夹），每个文件夹包含一个 list.txt（内含 B 站链接或 BV 号）
 - covers/: 封面缓存（运行时生成）
@@ -106,6 +105,14 @@ python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 - POST /api/covers/preload: 批量预加载封面
 - GET /api/play/{folder_path}/{page}: 按需下载并播放（返回本地播放 URL）
 - GET /api/subtitle/{folder_path}/{page}: 下载并返回字幕 URL
+- GET /api/progress/{folder_path}: 获取合集内所有观看进度
+- POST /api/progress: 保存观看进度（folder_path、bvid、page、position、duration）
+- POST /api/download/{folder_path}/{item_index}: 创建异步下载任务，返回 task_id
+- GET /api/download/tasks/{task_id}: 查询下载阶段和真实进度
+- GET /api/settings/cookie/status: 家长区 Cookie 状态
+- POST /api/settings/cookie: 家长区保存 B 站 Cookie
+- GET /api/cache/status: 家长区缓存状态
+- POST /api/cache/clean: 家长区清理视频缓存
 - 静态文件：/static/...、/covers/...、/subtitles/...
 
 ## 开发说明
