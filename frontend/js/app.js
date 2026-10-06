@@ -385,8 +385,9 @@ export class VideoPlayerApp {
             const coverUrl = /^https?:\/\//i.test(String(video.cover_url || ''))
                 ? video.cover_url
                 : this.apiBase + video.cover_url;
+            const fallbackUrl = `${this.apiBase}/api/cover/${encodeURIComponent(video.bvid || '')}/${video.page || 1}`;
             const thumbnailHTML = hasCover
-                ? `<img src="${this.escapeHtml(coverUrl)}" alt="视频封面" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"><div class="placeholder-icon" style="display: none;">🎬</div>`
+                ? `<img src="${this.escapeHtml(coverUrl)}" referrerpolicy="no-referrer" data-fallback-url="${this.escapeHtml(fallbackUrl)}" alt="视频封面" onerror="if(!this.dataset.retried && this.dataset.fallbackUrl){ this.dataset.retried='1'; this.src=this.dataset.fallbackUrl; } else { this.style.display='none'; this.nextElementSibling.style.display='flex'; }"><div class="placeholder-icon" style="display: none;">🎬</div>`
                 : '<div class="placeholder-icon">🎬</div>';
 
             const progress = video.progress;
@@ -473,7 +474,7 @@ export class VideoPlayerApp {
                     ? coverUrl
                     : this.apiBase + coverUrl;
                 thumbnail.innerHTML = `
-                    <img src="${this.escapeHtml(finalUrl)}" alt="视频封面"
+                    <img src="${this.escapeHtml(finalUrl)}" referrerpolicy="no-referrer" alt="视频封面"
                          onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
                     <div class="placeholder-icon" style="display: none;">🎬</div>
                 `;

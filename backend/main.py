@@ -755,8 +755,8 @@ async def get_folder_episodes_async(folder_path: str) -> List[Dict]:
                 "bvid": episode_id,
                 "cid": 0,
                 "duration": meta.get('duration', 0),
-                # 配置了 albumid 后，爱奇艺横版图优先于历史本地缓存，避免旧竖图造成黑边。
-                "cover_url": qiyi_cover or (f"/covers/{cover_filename}" if has_local_cover else ''),
+                # 本地缓存优先，未缓存时使用外部元数据封面
+                "cover_url": (f"/covers/{cover_filename}" if has_local_cover else qiyi_cover),
                 "cover_source": qiyi_cover or entry.get('cover') or meta.get('cover', ''),
                 "metadata_source": "iqiyi" if qiyi_title or qiyi_cover else "silidm",
                 "album_id": entry.get('album_id', ''),
