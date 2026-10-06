@@ -36,8 +36,10 @@ try:
         COVERS_DIR,
         DEFAULT_PLAYER_SETTINGS,
         FRONTEND_DIR,
+        HLS_SEGMENT_CACHE_MB,
         MAX_CACHE_SIZE_MB,
         MIN_FREE_DISK_MB,
+        SILIDM_PREFETCH_WINDOW,
         STATE_FILE,
         SUBTITLES_DIR,
         TARGET_CACHE_SIZE_MB,
@@ -47,6 +49,7 @@ try:
     )
     from . import silidm as silidm_service
     from . import iqiyi_metadata as iqiyi_service
+    from . import time_limits as time_limits_service
 except ImportError:
     from filesystem import ensure_directories, safe_resolve_path
     from http_client import (
@@ -62,8 +65,10 @@ except ImportError:
         COVERS_DIR,
         DEFAULT_PLAYER_SETTINGS,
         FRONTEND_DIR,
+        HLS_SEGMENT_CACHE_MB,
         MAX_CACHE_SIZE_MB,
         MIN_FREE_DISK_MB,
+        SILIDM_PREFETCH_WINDOW,
         STATE_FILE,
         SUBTITLES_DIR,
         TARGET_CACHE_SIZE_MB,
@@ -73,6 +78,7 @@ except ImportError:
     )
     import silidm as silidm_service
     import iqiyi_metadata as iqiyi_service
+    import time_limits as time_limits_service
 
 log_startup_configuration()
 
@@ -229,6 +235,9 @@ def cleanup_video_cache(needed_bytes: int = 0) -> dict:
                 print(f"[LRU 淘汰] 已清理旧视频: {p.name} ({size / (1024 * 1024):.1f} MB)")
             except Exception as e:
                 print(f"删除旧视频缓存失败 ({p.name}): {e}")
+
+        if hasattr(silidm_service, "cleanup_segment_cache"):
+            silidm_service.cleanup_segment_cache()
 
         print(f"[缓存回收完毕] 共清理 {deleted_count} 个视频，释放 {freed_bytes / (1024 * 1024):.1f} MB。"
               f" 当前缓存: {(total_bytes - freed_bytes)/(1024*1024):.1f} MB，"
@@ -1184,6 +1193,10 @@ async def get_hls_playlist(episode_id: str):
         raise HTTPException(status_code=400, detail='Invalid episode id')
     try:
         playlist = await asyncio.to_thread(service.proxied_playlist, episode_id, url)
+        # 在返回播放列表的同时，后台异步提前预热并预加载前几个分片（0~2），
+        # 从而在浏览器刚解析完 manifest 的瞬间，分片 0 已经就绪，实现秒开起播
+        if hasattr(service, "prefetch_segments"):
+            service.prefetch_segments(episode_id, 0, window=3)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f'解析失败: {exc}')
     return Response(
@@ -1195,25 +1208,27 @@ async def get_hls_playlist(episode_id: str):
 
 @app.get("/api/hls/{episode_id}/seg/{index}.ts")
 async def get_hls_segment(episode_id: str, index: int):
-    """HLS 分片代理 —— 用多连接并行拉取上游分片后原样返回。
-
-    上游 CDN 把单条连接压到 ~1.2Mbps（低于 2~2.8Mbps 的码率），
-    而总吞吐可达 8~11Mbps，因此这里对每个分片发多条 ``Range`` 请求并行下载再拼接。
-    """
+    """HLS 分片代理 —— 支持内存与磁盘缓存、并行下载及滑动窗口预加载。"""
     service = _resolver_for_episode_id(episode_id)
     if service is None:
         raise HTTPException(status_code=400, detail='Invalid episode id')
-    segment_url = await asyncio.to_thread(service.segment_url_for, episode_id, index)
-    if not segment_url:
-        raise HTTPException(status_code=404, detail='Segment not found')
     try:
-        data = await asyncio.to_thread(service.fetch_segment, segment_url)
+        if hasattr(service, "get_cached_or_fetch_segment"):
+            data = await asyncio.to_thread(service.get_cached_or_fetch_segment, episode_id, index)
+            # 触发后台滑动窗口预加载后续分片（默认后推 6 个分片，约 18~20 秒缓冲量）
+            prefetch_window = getattr(service, "SILIDM_PREFETCH_WINDOW", 6)
+            service.prefetch_segments(episode_id, index, window=prefetch_window)
+        else:
+            segment_url = await asyncio.to_thread(service.segment_url_for, episode_id, index)
+            if not segment_url:
+                raise HTTPException(status_code=404, detail='Segment not found')
+            data = await asyncio.to_thread(service.fetch_segment, segment_url)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f'分片下载失败: {exc}')
     return Response(
         content=data,
         media_type='video/mp2t',
-        headers={'Cache-Control': 'public, max-age=3600'},
+        headers={'Cache-Control': 'public, max-age=86400'},
     )
 
 
@@ -1371,6 +1386,108 @@ async def update_cookie(request: Request):
         saved["cookie"] = cookie
         await asyncio.to_thread(_write_player_state, state)
     return {"success": True, "has_cookie": True}
+
+
+# --- 观看限时管理 API ---
+
+@app.get("/api/time-limits/status")
+async def get_time_limits():
+    """获取当前限时配置、今日各合集及总用时与剩余时间"""
+    async with _progress_lock:
+        state = _read_player_state()
+        status = time_limits_service.get_time_limits_status(state, VIDEOS_DIR)
+    return JSONResponse(content=status, headers={"Content-Type": "application/json; charset=utf-8"})
+
+
+@app.post("/api/time-limits/config")
+async def save_time_limits_config(request: Request):
+    """保存限时配置（总限时开关、全局限时、各目录限时、家长PIN）"""
+    try:
+        payload = await request.json()
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from error
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON body must be an object")
+
+    async with _progress_lock:
+        state = _read_player_state()
+        time_limits_service.update_time_limits_config(state, payload)
+        await asyncio.to_thread(_write_player_state, state)
+        status = time_limits_service.get_time_limits_status(state, VIDEOS_DIR)
+    return JSONResponse(content=status, headers={"Content-Type": "application/json; charset=utf-8"})
+
+
+@app.post("/api/time-limits/heartbeat")
+async def record_playback_heartbeat(request: Request):
+    """播放过程中定期上报心跳累计物理观看时间"""
+    try:
+        payload = await request.json()
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from error
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON body must be an object")
+
+    folder_path = str(payload.get("folder_path") or "")
+    delta_seconds = float(payload.get("delta_seconds") or 0.0)
+
+    async with _progress_lock:
+        state = _read_player_state()
+        result, locked = time_limits_service.record_heartbeat(state, folder_path, delta_seconds, VIDEOS_DIR)
+        await asyncio.to_thread(_write_player_state, state)
+
+    return JSONResponse(content=result, headers={"Content-Type": "application/json; charset=utf-8"})
+
+
+@app.post("/api/time-limits/extend")
+async def grant_bonus_time(request: Request):
+    """家长临时给指定合集或全局追加观看时长（加时）"""
+    try:
+        payload = await request.json()
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from error
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON body must be an object")
+
+    extend_type = str(payload.get("type") or "folder")
+    folder_path = str(payload.get("folder_path") or "")
+    minutes = int(payload.get("minutes") or 15)
+
+    async with _progress_lock:
+        state = _read_player_state()
+        res = time_limits_service.extend_time(state, extend_type, folder_path, minutes)
+        await asyncio.to_thread(_write_player_state, state)
+        status = time_limits_service.get_time_limits_status(state, VIDEOS_DIR)
+
+    return JSONResponse(content={"result": res, "status": status}, headers={"Content-Type": "application/json; charset=utf-8"})
+
+
+@app.post("/api/time-limits/reset-today")
+async def reset_today_time():
+    """家长重置今日所有观看计时（清零重计）"""
+    async with _progress_lock:
+        state = _read_player_state()
+        time_limits_service.reset_today_usage(state)
+        await asyncio.to_thread(_write_player_state, state)
+        status = time_limits_service.get_time_limits_status(state, VIDEOS_DIR)
+    return JSONResponse(content=status, headers={"Content-Type": "application/json; charset=utf-8"})
+
+
+@app.post("/api/time-limits/verify-pin")
+async def verify_pin_code(request: Request):
+    """校验家长4位口令（若未配置则直接返回true）"""
+    try:
+        payload = await request.json()
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from error
+
+    pin = str(payload.get("pin") or "")
+    async with _progress_lock:
+        state = _read_player_state()
+        valid = time_limits_service.verify_parent_pin(state, pin)
+    return JSONResponse(content={"valid": valid}, headers={"Content-Type": "application/json; charset=utf-8"})
 
 
 @app.get("/api/cache/status")

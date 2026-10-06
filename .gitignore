@@ -84,6 +84,8 @@ video_list.txt
 todolist.txt
 plyr.md
 .cache_*.json
+.cache_segments/
+videos/.cache_segments/
 
 # Runtime settings containing local credentials
 backend/settings.json

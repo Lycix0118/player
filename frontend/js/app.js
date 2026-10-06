@@ -4,6 +4,7 @@ import { createSettingsState, updateSetting as persistSetting, applyServerSettin
 import { ScreenRouter } from './views/screen-router.js';
 import { createToast } from './components/toast.js';
 import { escapeHtml as escapeHtmlValue } from './utils/dom.js';
+import { TimeLimitsController } from './components/timelimits-controller.js';
 
 // 兼容迁移层：业务方法按功能逐步拆到 views/api 模块，暂时保留既有渲染行为。
 export class VideoPlayerApp {
@@ -28,6 +29,7 @@ export class VideoPlayerApp {
         this.loadStartTime = Date.now();
         this.appEntered = false;
         this.settings = createSettingsState();
+        this.timeLimits = new TimeLimitsController(this);
         
         this.init();
     }
@@ -36,8 +38,11 @@ export class VideoPlayerApp {
         // 绑定事件监听器
         this.bindEvents();
         
-        // 从后端同步最新统一设置（多端与跨浏览器同步）
-        await this.syncSettingsFromServer();
+        // 从后端同步最新统一设置与限时配置（多端与跨浏览器同步）
+        await Promise.all([
+            this.syncSettingsFromServer(),
+            this.timeLimits.fetchStatus()
+        ]);
 
         // 加载文件夹数据
         this.loadFolders();
@@ -67,7 +72,9 @@ export class VideoPlayerApp {
             this.navigateToParent();
         });
 
-        document.getElementById('open-settings').addEventListener('click', () => this.openSettings());
+        document.getElementById('open-settings').addEventListener('click', () => {
+            this.timeLimits.requestParentAccess(() => this.openSettings());
+        });
         document.getElementById('back-from-settings').addEventListener('click', () => this.showScreen('folders'));
         document.getElementById('save-cookie').addEventListener('click', () => this.saveCookie());
         document.getElementById('toggle-cookie-visibility').addEventListener('click', () => this.toggleCookieVisibility());
@@ -80,10 +87,12 @@ export class VideoPlayerApp {
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible') {
                 this.syncSettingsFromServer();
+                this.timeLimits.fetchStatus();
             }
         });
         window.addEventListener('focus', () => {
             this.syncSettingsFromServer();
+            this.timeLimits.fetchStatus();
         });
 
         this.applySettings();
@@ -140,6 +149,8 @@ export class VideoPlayerApp {
         if (status) status.textContent = '正在读取状态…';
         await this.syncSettingsFromServer();
         this.applySettings();
+        const timeStatus = await this.timeLimits.fetchStatus();
+        this.timeLimits.renderSettingsPanel(timeStatus);
         this.showScreen('settings');
         try {
             const response = await fetch(this.apiBase + '/api/settings/cookie/status');
@@ -212,6 +223,7 @@ export class VideoPlayerApp {
             // 更新当前路径
             this.currentPath = (normalizedPath && normalizedPath.trim()) ? normalizedPath.split('/') : [];
             
+            await this.timeLimits.fetchStatus();
             this.renderFolders(folders);
             await this.loadAllProgress(folders);
             this.renderContinueWatching();
@@ -254,6 +266,10 @@ export class VideoPlayerApp {
         document.getElementById('continue-count').textContent = `${items.length} 个未完成视频`;
         list.innerHTML = items.map(video => `<button class="continue-item" data-folder="${this.escapeHtml(video.folder_path)}" data-bvid="${this.escapeHtml(video.bvid)}" data-page="${video.page}"><span class="continue-icon">▶</span><span class="continue-copy"><strong>${this.escapeHtml(video.title)}</strong><small>${this.escapeHtml(video.folder_path)} · 已观看 ${Math.round(video.progress.position / Math.max(video.progress.duration, 1) * 100)}%</small></span></button>`).join('');
         list.querySelectorAll('.continue-item').forEach(button => button.addEventListener('click', async () => {
+            if (this.timeLimits.isFolderLocked(button.dataset.folder)) {
+                this.timeLimits.showFolderBlockedModal(button.dataset.folder);
+                return;
+            }
             const videos = await this.fetchVideos(button.dataset.folder);
             const video = videos.find(item => item.bvid === button.dataset.bvid && String(item.page) === button.dataset.page);
             if (video) this.playVideo(video, button.dataset.folder);
@@ -283,21 +299,34 @@ export class VideoPlayerApp {
         }
 
         folders.forEach((folder, index) => {
-            const folderElement = document.createElement('div');
-            folderElement.className = 'folder-item';
-            //folderElement.style.animationDelay = `${index * 0.15}s`;
-            folderElement.setAttribute('tabindex', '0'); // 键盘可访问性
-
             const folderName = typeof folder === 'string' ? folder : folder.name;
+            const folderPath = typeof folder === 'string' ? folder : folder.path;
             const safeFolderName = this.escapeHtml(folderName);
             const hasVideos = typeof folder === 'object' && folder.has_list_file;
             const folderIcon = '📁'; // 统一使用文件夹图标
+
+            const isLocked = this.timeLimits.isFolderLocked(folderPath);
+            const remainingSec = this.timeLimits.getFolderRemainingSeconds(folderPath);
+
+            let timePill = '';
+            if (isLocked) {
+                timePill = `<span class="folder-time-pill pill-locked">🔒 今日已休息</span>`;
+            } else if (remainingSec !== null) {
+                const remMin = Math.ceil(remainingSec / 60);
+                const pillClass = remMin <= 10 ? 'pill-warn' : 'pill-normal';
+                timePill = `<span class="folder-time-pill ${pillClass}">⏱ 剩 ${remMin} 分</span>`;
+            }
+
+            const folderElement = document.createElement('div');
+            folderElement.className = isLocked ? 'folder-item folder-locked' : 'folder-item';
+            folderElement.setAttribute('tabindex', '0'); // 键盘可访问性
 
             const countBadge = (typeof folder === 'object' && folder.video_count && folder.video_count > 0)
                 ? `<div class="folder-count">${this.escapeHtml(folder.video_count)} 部视频</div>`
                 : '';
 
             folderElement.innerHTML = `
+                ${timePill}
                 <span class="folder-icon">${folderIcon}</span>
                 <div class="folder-name">${safeFolderName}</div>
                 ${countBadge}
@@ -305,6 +334,10 @@ export class VideoPlayerApp {
 
             // 点击和键盘事件
             const handleActivation = () => {
+                if (isLocked) {
+                    this.timeLimits.showFolderBlockedModal(folderPath);
+                    return;
+                }
                 if (typeof folder === 'string') {
                     // 兼容旧格式（字符串）
                     this.loadVideos(folder);
@@ -563,6 +596,11 @@ export class VideoPlayerApp {
 
     async playVideo(video, folderPath = this.currentFolder) {
         try {
+            if (this.timeLimits.isFolderLocked(folderPath)) {
+                this.timeLimits.showFolderBlockedModal(folderPath);
+                return;
+            }
+
             this.clearVideoPlayer();
             this.currentFolder = folderPath;
             this.currentVideo = video;
@@ -573,6 +611,7 @@ export class VideoPlayerApp {
             if (badgeEl) badgeEl.textContent = `第 ${videoIndex} 集`;
 
             this.showScreen('player');
+            this.timeLimits.startTrackingForFolder(this.currentFolder);
             this.showDownloadProgress();
             
             const response = await fetch(`${this.apiBase}/api/download/${encodeURIComponent(this.currentFolder)}/${videoIndex}?bvid=${encodeURIComponent(video.bvid || '')}&page=${video.page || 1}`, { method: 'POST' });
@@ -638,6 +677,7 @@ export class VideoPlayerApp {
 
     clearVideoPlayer() {
         this.saveCurrentProgress(true);
+        this.timeLimits.stopTracking();
 
         const videoPlayer = document.getElementById('video-player');
         const subtitleTrack = document.getElementById('subtitle-track');
@@ -735,10 +775,21 @@ export class VideoPlayerApp {
         }
 
         const hls = new window.Hls({
-            // 分片由浏览器直连 CDN，后端只代理播放列表，缓冲可以留宽一些
-            maxBufferLength: 30,
-            maxMaxBufferLength: 60,
-            enableWorker: true
+            enableWorker: true,
+            lowLatencyMode: false,               // 点播模式关闭低延迟激进策略，允许充分预缓冲
+            backBufferLength: 60,                // 保留前 60s 缓冲，回退时秒播免重复请求
+            maxBufferLength: 60,                 // 目标缓冲时长提升至 60s（默认 30s）
+            maxMaxBufferLength: 120,             // 最大缓冲上限 120s，提供充足安全余量
+            maxBufferSize: 256 * 1024 * 1024,    // 允许 256MB 缓冲内存，避免因体积限制截断预缓冲
+            maxBufferHole: 0.5,                  // 容忍并平滑跨越 0.5s 内的微小时间戳缝隙
+            nudgeOffset: 0.2,                    // 遇到微小缝隙时向前轻推 0.2s，避免卡死在分片交界处
+            nudgeMaxRetry: 5,                    // 微调重试次数
+            fragLoadingTimeOut: 30000,           // 单分片加载超时宽限至 30s
+            fragLoadingMaxRetry: 6,              // 分片重试次数
+            fragLoadingRetryDelay: 800,          // 重试间隔
+            fragLoadingMaxRetryTimeout: 64000,
+            manifestLoadingTimeOut: 20000,
+            manifestLoadingMaxRetry: 4
         });
         this.hls = hls;
 
@@ -751,7 +802,16 @@ export class VideoPlayerApp {
         });
 
         hls.on(window.Hls.Events.ERROR, (_event, data) => {
-            if (!data || !data.fatal) return;
+            if (!data) return;
+
+            // 针对非致命缓冲停滞（bufferStalledError）：主动唤醒加载
+            if (data.details === 'bufferStalledError') {
+                console.warn('HLS 缓冲轻微停滞，主动唤醒加载');
+                try { hls.startLoad(); } catch (_) {}
+                return;
+            }
+
+            if (!data.fatal) return;
 
             // 起播阶段抖动或解析站限流：短暂退避后重试（startLoad 会重新换取签名）
             if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR && this.hlsRetryCount < 3) {
@@ -771,11 +831,50 @@ export class VideoPlayerApp {
             this.showError('视频流加载失败，请重试');
         });
 
+        // 绑定停滞自动微推看门狗，防止 TS 交叉边界导致画面偶发冻结
+        if (this._hlsStallTimer) {
+            clearTimeout(this._hlsStallTimer);
+            this._hlsStallTimer = null;
+        }
+        const onWaiting = () => {
+            if (this._hlsStallTimer) clearTimeout(this._hlsStallTimer);
+            this._hlsStallTimer = setTimeout(() => {
+                if (videoPlayer && !videoPlayer.paused && videoPlayer.readyState < 3) {
+                    console.warn('播放器停滞超 3.5s，执行轻微微调推进');
+                    try {
+                        if (this.hls) this.hls.startLoad();
+                        videoPlayer.currentTime += 0.1;
+                    } catch (_) {}
+                }
+            }, 3500);
+        };
+        const onPlaying = () => {
+            if (this._hlsStallTimer) {
+                clearTimeout(this._hlsStallTimer);
+                this._hlsStallTimer = null;
+            }
+        };
+        videoPlayer.addEventListener('waiting', onWaiting);
+        videoPlayer.addEventListener('playing', onPlaying);
+        this._hlsMediaListeners = { onWaiting, onPlaying };
+
         hls.loadSource(source);
         hls.attachMedia(videoPlayer);
     }
 
     destroyHls() {
+        if (this._hlsStallTimer) {
+            clearTimeout(this._hlsStallTimer);
+            this._hlsStallTimer = null;
+        }
+        if (this._hlsMediaListeners) {
+            const videoPlayer = document.getElementById('video-player');
+            if (videoPlayer) {
+                videoPlayer.removeEventListener('waiting', this._hlsMediaListeners.onWaiting);
+                videoPlayer.removeEventListener('playing', this._hlsMediaListeners.onPlaying);
+            }
+            this._hlsMediaListeners = null;
+        }
         if (!this.hls) return;
         try { this.hls.destroy(); } catch (_) {}
         this.hls = null;
@@ -941,6 +1040,7 @@ export class VideoPlayerApp {
         this.player.on('pause', () => {
             console.log('暂停播放');
             this.saveCurrentProgress(true);
+            this.timeLimits.flushHeartbeat();
         });
 
         this.player.on('timeupdate', () => {
@@ -957,6 +1057,7 @@ export class VideoPlayerApp {
 
         this.player.on('ended', () => {
             this.saveCurrentProgress(true);
+            this.timeLimits.flushHeartbeat();
             if (this.settings.autoplay) this.playRelative(1);
         });
 

@@ -29,6 +29,7 @@
     <link rel="stylesheet" href="styles/library.css">
     <link rel="stylesheet" href="styles/settings.css">
     <link rel="stylesheet" href="styles/player.css">
+    <link rel="stylesheet" href="styles/timelimits.css">
     <link rel="stylesheet" href="styles.css?v=20261002-cute">
     <link rel="icon" href="icon-192x192.png">
     <link rel="apple-touch-icon" href="icon-192x192.png">
@@ -99,7 +100,10 @@
         <header class="app-header">
             <button id="back-to-parent" class="back-btn hidden">← 返回</button>
             <h1 id="folders-title">📁 选择文件夹</h1>
-            <button id="open-settings" class="icon-btn" type="button" title="打开家长区" aria-label="打开家长区">🔒</button>
+            <div class="header-right-box">
+                <span id="header-today-time" class="header-time-pill" title="今日累计观看总时长">⏱️ 今日已看 0 分钟</span>
+                <button id="open-settings" class="icon-btn" type="button" title="打开家长区" aria-label="打开家长区">🔒</button>
+            </div>
         </header>
         <main class="content">
             <!-- 面包屑导航 -->
@@ -151,6 +155,73 @@
                 </div>
             </section>
             <section class="settings-section">
+                <div class="settings-section-heading"><h2>⏱️ 观看限时管理</h2><span class="settings-section-hint">保护视力，支持合集单项及全局总限时</span></div>
+                <div class="settings-card settings-time-card">
+                    <label class="setting-row"><span><strong>开启观看限时</strong><small>启用后将严格按下方策略管控播放，到期自动休息</small></span><input id="setting-timelimit-enabled" class="switch-input" type="checkbox"></label>
+                    
+                    <div id="timelimit-options-container" class="timelimit-options">
+                        <!-- 全局总限时 -->
+                        <div class="timelimit-group">
+                            <div class="timelimit-group-header">
+                                <div>
+                                    <span class="timelimit-title">🌍 全局每日总限时</span>
+                                    <small class="timelimit-desc">所有视频共享的今日累计播放时长上限</small>
+                                </div>
+                                <span id="timelimit-global-stat" class="timelimit-badge">今日已看: 0 分钟</span>
+                            </div>
+                            <div class="timelimit-control-row">
+                                <select id="setting-timelimit-global" class="settings-select">
+                                    <option value="0">不限制</option>
+                                    <option value="15">15 分钟</option>
+                                    <option value="30">30 分钟</option>
+                                    <option value="45">45 分钟</option>
+                                    <option value="60">60 分钟 (1小时)</option>
+                                    <option value="90">90 分钟 (1.5小时)</option>
+                                    <option value="120">120 分钟 (2小时)</option>
+                                    <option value="custom">自定义分钟数...</option>
+                                </select>
+                                <input id="setting-timelimit-global-custom" type="number" min="1" max="600" class="custom-min-input hidden" placeholder="分钟数">
+                            </div>
+                        </div>
+
+                        <!-- 底层合集独立限时 -->
+                        <div class="timelimit-group">
+                            <div class="timelimit-group-header">
+                                <div>
+                                    <span class="timelimit-title">📁 各底层合集每日独立限时</span>
+                                    <small class="timelimit-desc">单独限制特定动画或合集的每日时长（不设则不限）</small>
+                                </div>
+                            </div>
+                            <div id="folder-limits-list" class="folder-limits-list">
+                                <p class="settings-status">正在读取合集列表…</p>
+                            </div>
+                        </div>
+
+                        <!-- 家长密码保护设置 -->
+                        <div class="timelimit-group">
+                            <div class="timelimit-group-header">
+                                <div>
+                                    <span class="timelimit-title">🔐 家长验证方式</span>
+                                    <small class="timelimit-desc">进入家长区与临时加时时的验证方式</small>
+                                </div>
+                                <span id="pin-status-badge" class="timelimit-badge">趣味算术验证</span>
+                            </div>
+                            <div class="pin-setting-row">
+                                <input id="parent-pin-input" type="password" maxlength="4" pattern="[0-9]*" class="pin-input" placeholder="设置4位数字密码（留空则使用算术题）">
+                                <button id="save-parent-pin-btn" class="secondary-btn" type="button">设置密码</button>
+                                <button id="clear-parent-pin-btn" class="secondary-btn hidden" type="button">清除密码</button>
+                            </div>
+                        </div>
+
+                        <!-- 底部操作：保存与重置今日 -->
+                        <div class="settings-action-row timelimit-actions">
+                            <button id="reset-today-limits" class="secondary-btn danger-btn" type="button">重置今日计时</button>
+                            <button id="save-timelimits-btn" class="primary-btn" type="button">保存限时设置</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            <section class="settings-section">
                 <div class="settings-section-heading"><h2>显示偏好</h2><span class="settings-section-hint">选择孩子更容易使用的界面</span></div>
                 <div class="settings-card"><label class="settings-label" for="theme-select">配色主题</label><select id="theme-select" class="settings-select"><option value="candy">糖果电视（当前）</option></select></div>
             </section>
@@ -169,6 +240,9 @@
         <header class="app-header">
             <button id="back-to-folders" class="back-btn">← 返回</button>
             <h1 id="folder-title">📺 视频列表</h1>
+            <div class="header-right-box">
+                <span id="videos-today-time" class="header-time-pill" title="今日累计观看总时长">⏱️ 今日已看 0 分钟</span>
+            </div>
         </header>
         <main class="content">
             <div class="video-toolbar">
@@ -193,7 +267,9 @@
                 <span id="player-badge" class="player-badge">第 1 集</span>
                 <h1 id="video-title" class="player-video-title">正在准备播放...</h1>
             </div>
-            <div class="player-header-spacer"></div>
+            <div class="player-header-spacer">
+                <span id="player-today-time" class="player-header-time-pill" title="今日累计观看总时长">⏱️ 今日已看 0 分钟</span>
+            </div>
         </header>
         <main class="player-main">
             <div id="video-container" class="video-container">
@@ -201,6 +277,39 @@
                     <track id="subtitle-track" kind="subtitles" src="" srclang="zh" label="中文字幕" default style="display: none;">
                     您的浏览器不支持视频播放。
                 </video>
+                <!-- 播放中时间预警气泡 -->
+                <div id="player-time-notice" class="player-time-notice hidden">
+                    <span class="notice-icon">⏱️</span>
+                    <span id="player-time-notice-text">还有 3 分钟要休息眼睛咯 🎈</span>
+                </div>
+                <!-- 萌趣小电视超额休息锁屏遮罩 -->
+                <div id="player-timeup-overlay" class="player-timeup-overlay hidden">
+                    <div class="timeup-card">
+                        <div class="sleep-tv-wrapper">
+                            <div class="sleep-tv-body">
+                                <div class="sleep-tv-screen">
+                                    <div class="sleep-tv-face">
+                                        <div class="sleep-eye eye-left"></div>
+                                        <div class="sleep-eye eye-right"></div>
+                                        <div class="sleep-blush blush-left"></div>
+                                        <div class="sleep-blush blush-right"></div>
+                                        <div class="sleep-mouth"></div>
+                                    </div>
+                                    <div class="zzz-container">
+                                        <span class="zzz z1">z</span>
+                                        <span class="zzz z2">z</span>
+                                        <span class="zzz z3">Z</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <h2 id="timeup-title">今日休息时间到啦 🌙</h2>
+                        <p id="timeup-desc">眼睛看了很久视频，需要好好休息一下咯。<br>明天小电视再陪你一起看！✨</p>
+                        <div class="timeup-actions">
+                            <button id="timeup-back-btn" class="primary-btn timeup-btn" type="button">好的，去休息</button>
+                        </div>
+                    </div>
+                </div>
                 <!-- 专业流媒体加载与准备遮罩层 -->
                 <div id="download-progress" class="player-loader-overlay hidden">
                     <div class="loader-card">
@@ -217,6 +326,68 @@
                 </div>
             </div>
         </main>
+    </div>
+
+    <!-- 家长验证门禁弹窗 -->
+    <div id="parent-gate-modal" class="app-modal-backdrop hidden">
+        <div class="app-modal-card">
+            <div class="app-modal-header">
+                <h3>🔒 家长验证</h3>
+                <button id="parent-gate-close" class="modal-close-btn" type="button">×</button>
+            </div>
+            <div class="app-modal-body">
+                <p id="parent-gate-prompt" class="modal-prompt">请回答以下算术题以验证家长身份：</p>
+                <div id="parent-gate-math-box" class="gate-math-box">
+                    <span id="parent-gate-question" class="gate-math-question">8 × 7 = ?</span>
+                    <input id="parent-gate-math-answer" type="number" class="gate-math-input" placeholder="输入答案" autocomplete="off">
+                </div>
+                <div id="parent-gate-pin-box" class="gate-pin-box hidden">
+                    <input id="parent-gate-pin-input" type="password" maxlength="4" pattern="[0-9]*" class="gate-pin-input" placeholder="输入4位PIN" autocomplete="off">
+                </div>
+                <p id="parent-gate-error" class="modal-error hidden">验证失败，请重试</p>
+            </div>
+            <div class="app-modal-footer">
+                <button id="parent-gate-cancel" class="secondary-btn" type="button">取消</button>
+                <button id="parent-gate-submit" class="primary-btn" type="button">验证进入</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 家长临时加时弹窗 -->
+    <div id="extend-modal" class="app-modal-backdrop hidden">
+        <div class="app-modal-card">
+            <div class="app-modal-header">
+                <h3>⏱️ 家长临时加时</h3>
+                <button id="extend-modal-close" class="modal-close-btn" type="button">×</button>
+            </div>
+            <div class="app-modal-body">
+                <p id="extend-modal-desc" class="modal-prompt">请选择为当前合集或全局追加今日观看时长：</p>
+                <div class="extend-options-grid">
+                    <button class="extend-option-btn" data-type="folder" data-min="10">本合集 +10 分钟</button>
+                    <button class="extend-option-btn" data-type="folder" data-min="15">本合集 +15 分钟</button>
+                    <button class="extend-option-btn" data-type="global" data-min="15">全局总限时 +15 分钟</button>
+                    <button class="extend-option-btn" data-type="unlock_today" data-min="1440">今日不再限制</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 合集已受限温和拦截弹窗 -->
+    <div id="folder-blocked-modal" class="app-modal-backdrop hidden">
+        <div class="app-modal-card">
+            <div class="app-modal-header">
+                <h3>🌟 休息时间到啦</h3>
+                <button id="folder-blocked-close" class="modal-close-btn" type="button">×</button>
+            </div>
+            <div class="app-modal-body text-center">
+                <div class="blocked-icon">⏰</div>
+                <h4 id="folder-blocked-title">这个合集今天的观看时间已用完</h4>
+                <p id="folder-blocked-desc">今天看的时间够多啦，眼睛需要休息一下哦！明天再来看吧~</p>
+            </div>
+            <div class="app-modal-footer" style="justify-content: center;">
+                <button id="folder-blocked-confirm" class="primary-btn" type="button" style="min-width: 140px;">好的，去休息</button>
+            </div>
+        </div>
     </div>
 
     <!-- 错误提示 -->
