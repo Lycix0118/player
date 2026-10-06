@@ -36,7 +36,6 @@ try:
         COVERS_DIR,
         DEFAULT_PLAYER_SETTINGS,
         FRONTEND_DIR,
-        HLS_SEGMENT_CACHE_MB,
         MAX_CACHE_SIZE_MB,
         MIN_FREE_DISK_MB,
         SILIDM_PREFETCH_WINDOW,
@@ -65,7 +64,6 @@ except ImportError:
         COVERS_DIR,
         DEFAULT_PLAYER_SETTINGS,
         FRONTEND_DIR,
-        HLS_SEGMENT_CACHE_MB,
         MAX_CACHE_SIZE_MB,
         MIN_FREE_DISK_MB,
         SILIDM_PREFETCH_WINDOW,
@@ -1250,7 +1248,7 @@ async def list_folders(path: str = ""):
     folders = []
     try:
         for item in target_path.iterdir():
-            if item.is_dir():
+            if item.is_dir() and not item.name.startswith('.'):
                 relative_path = str(item.relative_to(VIDEOS_DIR)).replace('\\', '/')
                 list_file = item / "list.txt"
                 has_list_file = list_file.exists()

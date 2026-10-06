@@ -68,9 +68,6 @@ SILIDM_BASE = _value("SILIDM_BASE", "https://silidm.com")
 # 该站上游对**单连接**限速（实测 ~1Mbps，低于 3.8Mbps 码率），必须并行；
 # 但连接数一多（实测 8 路）上游会直接重置 TLS（SSLEOFError），因此保守取 4。
 SILIDM_SEGMENT_PARALLELISM = int(_value("SILIDM_SEGMENT_PARALLELISM", "4"))
-# silidm 分片本地磁盘与内存缓存配置
-HLS_SEGMENT_CACHE_DIR = VIDEOS_DIR / ".cache_segments"
-HLS_SEGMENT_CACHE_MB = int(_value("HLS_SEGMENT_CACHE_MB", "3000"))
 SILIDM_PREFETCH_WINDOW = int(_value("SILIDM_PREFETCH_WINDOW", "6"))
 MAX_CACHE_SIZE_MB = int(_value("MAX_CACHE_SIZE_MB", "700"))
 TARGET_CACHE_SIZE_MB = int(_value("TARGET_CACHE_SIZE_MB", "500"))

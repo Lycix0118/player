@@ -43,8 +43,6 @@ from urllib3.util.retry import Retry
 
 try:  # 允许以包或脚本两种方式导入
     from .settings import (
-        HLS_SEGMENT_CACHE_DIR,
-        HLS_SEGMENT_CACHE_MB,
         SILIDM_BASE,
         SILIDM_PREFETCH_WINDOW,
         SILIDM_SEGMENT_PARALLELISM,
@@ -52,15 +50,11 @@ try:  # 允许以包或脚本两种方式导入
 except ImportError:  # pragma: no cover - 直接以脚本方式导入时
     try:
         from settings import (
-            HLS_SEGMENT_CACHE_DIR,
-            HLS_SEGMENT_CACHE_MB,
             SILIDM_BASE,
             SILIDM_PREFETCH_WINDOW,
             SILIDM_SEGMENT_PARALLELISM,
         )
     except ImportError:
-        HLS_SEGMENT_CACHE_DIR = Path("videos/.cache_segments")
-        HLS_SEGMENT_CACHE_MB = 3000
         SILIDM_PREFETCH_WINDOW = 6
         SILIDM_BASE = "https://silidm.com"
         SILIDM_SEGMENT_PARALLELISM = 4
@@ -684,57 +678,29 @@ def _set_ram_cache(key: str, data: bytes) -> None:
             _ram_segment_cache.popitem(last=False)
 
 
-def _segment_cache_path(episode_id: str, index: int) -> Path:
-    folder = Path(HLS_SEGMENT_CACHE_DIR) / episode_id
-    return folder / f"{index}.ts"
-
-
 def get_cached_or_fetch_segment(episode_id: str, index: int, timeout: int = 30) -> bytes:
-    """获取分片内容（RAM 缓存优先 -> 本地磁盘缓存 -> 远程拉取并写入缓存）。
+    """获取分片内容（RAM 内存热点缓存 -> 远程拉取）。
 
-    本地命中响应时间 < 1ms，重复播放或回退拖动 0 缓冲卡顿。
+    纯内存流式缓存，不写入本地磁盘，不产生碎片文件。
     """
     cache_key = f"{episode_id}:{index}"
     ram_data = _get_ram_cache(cache_key)
     if ram_data is not None:
         return ram_data
 
-    disk_path = _segment_cache_path(episode_id, index)
-    if disk_path.is_file() and disk_path.stat().st_size > 0:
-        try:
-            data = disk_path.read_bytes()
-            try:
-                os.utime(disk_path, None)
-            except OSError:
-                pass
-            _set_ram_cache(cache_key, data)
-            return data
-        except OSError:
-            pass
-
     segment_url = segment_url_for(episode_id, index, timeout=timeout)
     if not segment_url:
         raise SilidmError(f"未找到分片真实地址: {episode_id} #{index}")
 
     data = fetch_segment(segment_url, timeout=timeout)
-
-    try:
-        disk_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = disk_path.with_name(f"{index}.ts.tmp_{threading.get_ident()}_{time.time_ns()}")
-        tmp_path.write_bytes(data)
-        os.replace(tmp_path, disk_path)
-    except OSError:
-        pass
-
     _set_ram_cache(cache_key, data)
     return data
 
 
 def prefetch_segments(episode_id: str, current_index: int, window: int = 6) -> None:
-    """在后台静默预加载当前播放位置后续的 N 个分片到本地缓存中。
+    """在后台静默预加载当前播放位置后续的 N 个分片到内存缓存中。
 
-    当播放器请求 index 时，后台已经提前拉好了 index+1 ~ index+window，
-    播放器走到下一片时直接命中本地缓存，彻底消除公网波动导致的卡顿。
+    纯内存流式预热，播放器请求下一片时直接内存命中，无需读写磁盘。
     """
     with _prefetch_lock:
         _latest_playhead[episode_id] = current_index
@@ -762,8 +728,8 @@ def prefetch_segments(episode_id: str, current_index: int, window: int = 6) -> N
             if abs(tgt_idx - latest) > window + 2:
                 break
 
-            target_file = _segment_cache_path(episode_id, tgt_idx)
-            if target_file.is_file() and target_file.stat().st_size > 0:
+            cache_key = f"{episode_id}:{tgt_idx}"
+            if _get_ram_cache(cache_key) is not None:
                 continue
 
             if tgt_idx >= len(urls):
@@ -775,13 +741,7 @@ def prefetch_segments(episode_id: str, current_index: int, window: int = 6) -> N
             try:
                 data = fetch_segment(tgt_url, timeout=25)
                 if data:
-                    target_file.parent.mkdir(parents=True, exist_ok=True)
-                    tmp_file = target_file.with_name(
-                        f"{tgt_idx}.ts.tmp_{threading.get_ident()}_{time.time_ns()}"
-                    )
-                    tmp_file.write_bytes(data)
-                    os.replace(tmp_file, target_file)
-                    _set_ram_cache(f"{episode_id}:{tgt_idx}", data)
+                    _set_ram_cache(cache_key, data)
             except Exception:
                 # 预取失败静默忽略，不干扰正常播放
                 pass
@@ -790,47 +750,14 @@ def prefetch_segments(episode_id: str, current_index: int, window: int = 6) -> N
 
 
 def cleanup_segment_cache(max_mb: int = 3000) -> None:
-    """清理过期的 HLS 分片磁盘缓存，防止磁盘被撑满。
-
-    按剧集文件夹最后访问时间排序，淘汰最久未观看的剧集分片。
-    """
-    cache_dir = Path(HLS_SEGMENT_CACHE_DIR)
-    if not cache_dir.is_dir():
-        return
-    try:
-        max_bytes = max_mb * 1024 * 1024
-        target_bytes = int(max_bytes * 0.7)
-        total_size = 0
-        ep_dirs = []
-        for d in cache_dir.iterdir():
-            if d.is_dir():
-                d_size = 0
-                latest_mtime = d.stat().st_mtime
-                for f in d.iterdir():
-                    if f.is_file():
-                        st = f.stat()
-                        d_size += st.st_size
-                        if st.st_mtime > latest_mtime:
-                            latest_mtime = st.st_mtime
-                total_size += d_size
-                ep_dirs.append({"path": d, "size": d_size, "time": latest_mtime})
-
-        if total_size <= max_bytes:
-            return
-
-        # 最久未访问的排前面
-        ep_dirs.sort(key=lambda x: x["time"])
-        for item in ep_dirs:
-            if total_size <= target_bytes:
-                break
-            try:
-                import shutil
-                shutil.rmtree(item["path"], ignore_errors=True)
-                total_size -= item["size"]
-            except Exception:
-                pass
-    except Exception:
-        pass
+    """清理遗留的 HLS 分片磁盘缓存（纯内存模式下安全清理旧目录）。"""
+    cache_dir = Path("videos/.cache_segments")
+    if cache_dir.is_dir():
+        try:
+            import shutil
+            shutil.rmtree(cache_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 
 # --------------------------------------------------------------------------
