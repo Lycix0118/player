@@ -16,6 +16,12 @@ COVERS_DIR = BASE_DIR / "covers"
 SUBTITLES_DIR = BASE_DIR / "subtitles"
 STATE_FILE = BASE_DIR / ".player_state.json"
 
+DEFAULT_PLAYER_SETTINGS = {
+    "autoplay": False,
+    "subtitles": True,
+    "theme": "candy",
+}
+
 
 def _load_config_module():
     try:
@@ -34,7 +40,21 @@ def _value(name: str, default: str) -> str:
     return os.getenv(name, default)
 
 
+def _get_persisted_cookie() -> str:
+    if STATE_FILE.exists():
+        try:
+            import json
+            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return str(data.get("settings", {}).get("cookie") or data.get("cookie") or "").strip()
+        except Exception:
+            pass
+    return ""
+
+
 BILIBILI_COOKIE = _value("BILIBILI_COOKIE", "")
+if not BILIBILI_COOKIE:
+    BILIBILI_COOKIE = _get_persisted_cookie()
 
 # silidm.com（「电影先生」，苹果CMS 采集站）基址 —— 本项目唯一的外部视频来源。
 # list.txt 里可以写它的**详情页**（一行自动展开整季）或单集播放页：

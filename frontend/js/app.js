@@ -1,6 +1,6 @@
 import { ApiClient } from './api/client.js';
 import { createAppState } from './state/app-state.js';
-import { createSettingsState, updateSetting as persistSetting } from './state/settings-state.js';
+import { createSettingsState, updateSetting as persistSetting, applyServerSettings } from './state/settings-state.js';
 import { ScreenRouter } from './views/screen-router.js';
 import { createToast } from './components/toast.js';
 import { escapeHtml as escapeHtmlValue } from './utils/dom.js';
@@ -36,6 +36,9 @@ export class VideoPlayerApp {
         // 绑定事件监听器
         this.bindEvents();
         
+        // 从后端同步最新统一设置（多端与跨浏览器同步）
+        await this.syncSettingsFromServer();
+
         // 加载文件夹数据
         this.loadFolders();
     }
@@ -72,6 +75,17 @@ export class VideoPlayerApp {
         document.getElementById('setting-autoplay').addEventListener('change', (event) => this.updateSetting('autoplay', event.target.checked));
         document.getElementById('setting-subtitles').addEventListener('change', (event) => this.updateSetting('subtitles', event.target.checked));
         document.getElementById('theme-select').addEventListener('change', (event) => this.updateSetting('theme', event.target.value));
+
+        // 页面重新可见或获得焦点时，自动同步服务端最新配置（如其他设备修改过设置）
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                this.syncSettingsFromServer();
+            }
+        });
+        window.addEventListener('focus', () => {
+            this.syncSettingsFromServer();
+        });
+
         this.applySettings();
     }
 
@@ -82,6 +96,32 @@ export class VideoPlayerApp {
     updateSetting(key, value) {
         this.settings = persistSetting(this.settings, key, value);
         if (key === 'theme') this.applySettings();
+        this.saveSettingToServer(key, value);
+    }
+
+    async saveSettingToServer(key, value) {
+        try {
+            await fetch(this.apiBase + '/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [key]: value })
+            });
+        } catch (error) {
+            console.warn('保存设置到服务端失败:', error);
+        }
+    }
+
+    async syncSettingsFromServer() {
+        try {
+            const response = await fetch(this.apiBase + '/api/settings');
+            if (response.ok) {
+                const data = await response.json();
+                this.settings = applyServerSettings(this.settings, data);
+                this.applySettings();
+            }
+        } catch (error) {
+            console.warn('从服务端同步设置失败，使用本地缓存:', error);
+        }
     }
 
     applySettings() {
@@ -98,6 +138,7 @@ export class VideoPlayerApp {
         if (cookieInput) cookieInput.value = '';
         const status = document.getElementById('cookie-status');
         if (status) status.textContent = '正在读取状态…';
+        await this.syncSettingsFromServer();
         this.applySettings();
         this.showScreen('settings');
         try {

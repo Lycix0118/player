@@ -34,6 +34,7 @@ try:
     from .settings import (
         BILIBILI_COOKIE,
         COVERS_DIR,
+        DEFAULT_PLAYER_SETTINGS,
         FRONTEND_DIR,
         MAX_CACHE_SIZE_MB,
         MIN_FREE_DISK_MB,
@@ -59,6 +60,7 @@ except ImportError:
     from settings import (
         BILIBILI_COOKIE,
         COVERS_DIR,
+        DEFAULT_PLAYER_SETTINGS,
         FRONTEND_DIR,
         MAX_CACHE_SIZE_MB,
         MIN_FREE_DISK_MB,
@@ -1287,6 +1289,60 @@ async def get_cookie_status():
     return {"has_cookie": bool(BILIBILI_COOKIE.strip())}
 
 
+@app.get("/api/settings")
+async def get_settings():
+    state = _read_player_state()
+    settings = dict(DEFAULT_PLAYER_SETTINGS)
+    saved = state.get("settings", {})
+    if isinstance(saved, dict):
+        for k in DEFAULT_PLAYER_SETTINGS:
+            if k in saved:
+                settings[k] = saved[k]
+    settings["has_cookie"] = bool(BILIBILI_COOKIE.strip())
+    return JSONResponse(content=settings, headers={"Content-Type": "application/json; charset=utf-8"})
+
+
+@app.post("/api/settings")
+async def update_settings(request: Request):
+    global BILIBILI_COOKIE
+    try:
+        payload = await request.json()
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from error
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON body must be an object")
+
+    async with _progress_lock:
+        state = _read_player_state()
+        saved = state.setdefault("settings", {})
+        if not isinstance(saved, dict):
+            saved = {}
+            state["settings"] = saved
+
+        if "autoplay" in payload:
+            saved["autoplay"] = bool(payload["autoplay"])
+        if "subtitles" in payload:
+            saved["subtitles"] = bool(payload["subtitles"])
+        if "theme" in payload and isinstance(payload["theme"], str):
+            saved["theme"] = payload["theme"].strip()
+        if "cookie" in payload and isinstance(payload["cookie"], str):
+            c = payload["cookie"].strip()
+            if c:
+                BILIBILI_COOKIE = c
+                set_bilibili_cookie(c)
+                saved["cookie"] = c
+
+        await asyncio.to_thread(_write_player_state, state)
+
+    settings = dict(DEFAULT_PLAYER_SETTINGS)
+    for k in DEFAULT_PLAYER_SETTINGS:
+        if k in saved:
+            settings[k] = saved[k]
+    settings["has_cookie"] = bool(BILIBILI_COOKIE.strip())
+    return JSONResponse(content=settings, headers={"Content-Type": "application/json; charset=utf-8"})
+
+
 @app.post("/api/settings/cookie")
 async def update_cookie(request: Request):
     global BILIBILI_COOKIE
@@ -1306,6 +1362,14 @@ async def update_cookie(request: Request):
         raise HTTPException(status_code=400, detail="Invalid cookie")
     BILIBILI_COOKIE = cookie
     set_bilibili_cookie(cookie)
+    async with _progress_lock:
+        state = _read_player_state()
+        saved = state.setdefault("settings", {})
+        if not isinstance(saved, dict):
+            saved = {}
+            state["settings"] = saved
+        saved["cookie"] = cookie
+        await asyncio.to_thread(_write_player_state, state)
     return {"success": True, "has_cookie": True}
 
 
