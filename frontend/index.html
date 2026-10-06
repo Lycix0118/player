@@ -17,7 +17,7 @@
 
     <!-- 预加载关键资源 -->
     <link rel="preload" href="styles.css?v=20261002-cute" as="style">
-    <link rel="preload" href="js/main.js?v=20261005-modular" as="script" crossorigin>
+    <link rel="preload" href="js/main.js?v=20261005-modular2" as="script" crossorigin>
 
     <title>🎬 儿童视频播放器</title>
     <!-- Plyr CSS (Local for LAN/Offline) -->
@@ -225,6 +225,8 @@
 
     <!-- Plyr JavaScript (Local for LAN/Offline) -->
     <script src="vendor/plyr.js"></script>
-    <script type="module" src="js/main.js?v=20261005-modular"></script>
+    <!-- hls.js：外部视频源（silidm）的 m3u8 流式播放用，本地化以保持离线/LAN 可用 -->
+    <script src="vendor/hls.min.js"></script>
+    <script type="module" src="js/main.js?v=20261005-modular2"></script>
 </body>
 </html>

@@ -11,7 +11,7 @@ from functools import reduce
 from hashlib import md5
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
@@ -44,6 +44,8 @@ try:
         log_startup_configuration,
         set_bilibili_cookie,
     )
+    from . import silidm as silidm_service
+    from . import iqiyi_metadata as iqiyi_service
 except ImportError:
     from filesystem import ensure_directories, safe_resolve_path
     from http_client import (
@@ -67,8 +69,31 @@ except ImportError:
         log_startup_configuration,
         set_bilibili_cookie,
     )
+    import silidm as silidm_service
+    import iqiyi_metadata as iqiyi_service
 
 log_startup_configuration()
+
+# --- 外部来源解析器分派 -----------------------------------------------------
+# 每个来源模块都提供同一组接口：is_episode_id / url_from_episode_id /
+# make_episode_id / fetch_metadata / proxied_playlist / segment_url_for /
+# fetch_segment / stream_to_mp4。这里按 episode_id 前缀挑对应的实现，
+# 路由与下载逻辑就都不必关心来源差异。
+# 目前只有 silidm 一个外部来源（爱奇艺链路已整体移除）；保留这层分派是为了
+# 以后新增来源时只补一个同接口模块、不必再动路由。
+_RESOLVERS = {
+    "silidm": silidm_service,
+}
+# 走「HLS 流式播放（不预下载）」的来源标记
+_STREAM_SOURCES = ("silidm",)
+
+
+def _resolver_for_episode_id(episode_id: str):
+    """按 episode_id 前缀挑解析器；不认识返回 None。"""
+    for name, service in _RESOLVERS.items():
+        if service.is_episode_id(episode_id):
+            return service
+    return None
 
 # Download tasks are transient; watch progress is persisted in STATE_FILE.
 _download_tasks: Dict[str, Dict] = {}
@@ -428,6 +453,53 @@ def extract_bvid_from_url(url_or_bvid: str) -> str:
             return url_or_bvid
         raise ValueError(f"Invalid BV ID format: {url_or_bvid}")
 
+# --- list.txt 行解析（B站 / silidm 混排） ---
+
+def parse_list_entry(line: str) -> Optional[Dict]:
+    """解析 list.txt 的单行，支持 B站 与 silidm（电影先生）混排。
+
+    可识别写法（``|`` 为可选标题分隔符，放在标识任意一侧都行）::
+
+        BV1xxxxxxxxx
+        https://www.bilibili.com/video/BV1xxxxxxxxx
+        https://silidm.com/video/40717.html        # 详情页 —— 一行展开整季
+        https://silidm.com/play/40717-1-1.html     # 单集播放页
+        第1集 露营好时光 | https://silidm.com/play/40717-1-1.html
+
+    返回 ``{'kind': 'bilibili'|'silidm', 'key': bvid 或 URL, 'title': 自定义标题或 None}``；
+    无法识别时返回 None。**无法识别的 http 链接会打印一行提示**：不支持静默跳过，
+    否则写错格式的链接只会表现为「这个合集莫名其妙空了」，极难排查。
+    """
+    raw = (line or "").strip()
+    if not raw or raw.startswith('#'):
+        return None
+
+    album_match = re.search(r'(?:albumid|album_id|aid)\s*[:=]\s*(\d+)', raw, re.IGNORECASE)
+    album_id = album_match.group(1) if album_match else None
+    parts = [part.strip() for part in raw.split('|')] if '|' in raw else [raw]
+    identifier = next(
+        (p for p in parts if p.startswith('http') or re.match(r'^BV[a-zA-Z0-9]+$', p)),
+        None,
+    )
+    if not identifier:
+        return None
+    title = next((p for p in parts if p and p != identifier and not re.search(r'(?:albumid|album_id|aid)\s*[:=]', p, re.IGNORECASE)), None)
+
+    if silidm_service.is_silidm_url(identifier):
+        normalized = silidm_service.normalize_url(identifier)
+        if not normalized:
+            return None
+        # 详情页（/video/<id>.html）会自动展开整季，单集播放页则只出这一集
+        return {'kind': 'silidm', 'key': normalized, 'title': title, 'album_id': album_id}
+
+    try:
+        bvid = extract_bvid_from_url(identifier)
+    except ValueError:
+        print(f"[list.txt] 无法识别的视频来源，该行已跳过: {raw}")
+        return None
+    return {'kind': 'bilibili', 'key': bvid, 'title': title}
+
+
 async def get_bv_detail_async(bvid: str) -> Optional[Dict]:
     """获取单个 BV 的详细信息（官方 view API，含标题、封面、时长及所有分P）"""
     cache_key = f"view_{bvid}"
@@ -473,7 +545,8 @@ async def get_folder_episodes_async(folder_path: str) -> List[Dict]:
     except OSError:
         return []
 
-    cache_key = f"folder_episodes_{folder_path}:{list_mtime_ns}"
+    # 元数据字段变更时自动绕过旧进程内缓存。
+    cache_key = f"folder_episodes_v4_{folder_path}:{list_mtime_ns}"
     cached = get_cached(cache_key)
     if cached is not None:
         return cached
@@ -484,7 +557,21 @@ async def get_folder_episodes_async(folder_path: str) -> List[Dict]:
             if cache_file.stat().st_mtime >= list_file.stat().st_mtime:
                 cached_data = json.loads(cache_file.read_text(encoding='utf-8'))
                 if cached_data:
+                    stale_silidm = any(
+                        (ep.get('source') == 'silidm' or str(ep.get('bvid', '')).startswith('silidm_')) and (
+                            str(ep.get('title', '')).startswith('silidm 视频')
+                            or not ep.get('cover_source')
+                            # 旧缓存可能是爱奇艺接口原始的 120x160 竖版地址。
+                            or (ep.get('album_id') and re.search(r'_m_601(?:_m1)?\.jpg$', str(ep.get('cover_source', '')), re.IGNORECASE))
+                        ) for ep in cached_data
+                    )
+                    if stale_silidm:
+                        cached_data = None
+                if cached_data:
                     for ep in cached_data:
+                        # 旧版缓存没有 source/url 字段，补默认值保持向后兼容
+                        ep.setdefault('source', 'bilibili')
+                        ep.setdefault('url', '')
                         cover_filename = f"{ep['bvid']}_p{ep['page']}.jpg"
                         if (COVERS_DIR / cover_filename).exists():
                             ep['cover_url'] = f"/covers/{cover_filename}"
@@ -494,74 +581,190 @@ async def get_folder_episodes_async(folder_path: str) -> List[Dict]:
             pass
 
     with open(list_file, 'r', encoding='utf-8') as f:
-        bvid_lines = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        raw_lines = [line for line in f if line.strip() and not line.startswith('#')]
 
-    bvids = []
-    for line in bvid_lines:
-        try:
-            bvid = extract_bvid_from_url(line)
-            if bvid not in bvids:
-                bvids.append(bvid)
-        except ValueError:
+    # 逐行解析并去重（严格保持 list.txt 原始顺序，B站与外部来源可任意混排）
+    entries: List[Dict] = []
+    seen_keys = set()
+    for line in raw_lines:
+        entry = parse_list_entry(line)
+        if not entry:
             continue
+        dedupe_key = (entry['kind'], entry['key'])
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        entries.append(entry)
 
-    if not bvids:
+    if not entries:
         return []
 
-    # 并发安全拉取各 BV 信息
-    bv_details = await asyncio.gather(*[get_bv_detail_async(bvid) for bvid in bvids], return_exceptions=True)
+    # silidm 详情页：一行就代表整季，先展开成单集条目（保持 list.txt 的原始顺序）
+    detail_urls = [e['key'] for e in entries
+                   if e['kind'] == 'silidm' and silidm_service.is_detail_url(e['key'])]
+    detail_map: Dict[str, Dict] = {}
+    if detail_urls:
+        detail_results = await asyncio.gather(
+            *[asyncio.to_thread(silidm_service.fetch_detail, url) for url in detail_urls],
+            return_exceptions=True,
+        )
+        detail_map = {url: (r if isinstance(r, dict) else {})
+                      for url, r in zip(detail_urls, detail_results)}
+
+    expanded: List[Dict] = []
+    seen_expanded = set()
+    for entry in entries:
+        items = [entry]
+        if entry['kind'] == 'silidm' and silidm_service.is_detail_url(entry['key']):
+            detail = detail_map.get(entry['key']) or {}
+            items = []
+            for sub in detail.get('episodes') or []:
+                display = sub['title']
+                if entry.get('title'):
+                    display = f"{entry['title']} {display}"
+                items.append({
+                    'kind': 'silidm',
+                    'key': sub['url'],
+                    'title': display,
+                    'episode_title': sub.get('title', display),
+                    'series_title': detail.get('title', ''),
+                    'cover': detail.get('cover', ''),
+                    'album_id': entry.get('album_id'),
+                    'from_detail': True,
+                })
+            if not items:
+                print(f"silidm 详情页未展开出剧集，已跳过: {entry['key']}")
+        for item in items:
+            dedupe = (item['kind'], item['key'])
+            if dedupe in seen_expanded:
+                continue
+            seen_expanded.add(dedupe)
+            expanded.append(item)
+    entries = expanded
+
+    bvids = [e['key'] for e in entries if e['kind'] == 'bilibili']
+    # 详情页展开出来的条目已自带标题/封面，只有单独写的播放页才需要再抓一次
+    silidm_urls = [e['key'] for e in entries
+                   if e['kind'] == 'silidm' and not e.get('from_detail')]
+
+    # 并发安全拉取：B站详情 + silidm 元数据
+    bv_results = await asyncio.gather(*[get_bv_detail_async(bvid) for bvid in bvids], return_exceptions=True)
+    bv_detail_map = {bvid: r for bvid, r in zip(bvids, bv_results) if r and not isinstance(r, Exception)}
+    sil_results = await asyncio.gather(
+        *[asyncio.to_thread(silidm_service.fetch_metadata, url) for url in silidm_urls],
+        return_exceptions=True,
+    )
+    silidm_meta_map = {url: (r if isinstance(r, dict) else {})
+                       for url, r in zip(silidm_urls, sil_results)}
+
+    album_ids = sorted({str(e.get('album_id')) for e in entries if e.get('album_id')})
+    album_results = await asyncio.gather(
+        *[asyncio.to_thread(iqiyi_service.fetch_album_metadata, album_id) for album_id in album_ids],
+        return_exceptions=True,
+    )
+    album_map = {
+        album_id: (result if isinstance(result, dict) else {})
+        for album_id, result in zip(album_ids, album_results)
+    }
 
     episodes = []
     idx = 1
-    for detail in bv_details:
-        if not detail or isinstance(detail, Exception):
-            continue
 
-        pages = detail.get('pages', [])
-        bvid = detail['bvid']
-        bv_title = detail['title']
-        bv_pic = detail['pic']
+    for entry in entries:
+        override = entry.get('title')
 
-        if len(pages) <= 1:
-            p = pages[0] if pages else {'page': 1, 'cid': 0, 'part': bv_title, 'duration': detail['duration']}
-            clean_title = p.get('part') or bv_title
-            cover_filename = f"{bvid}_p{p['page']}.jpg"
-            cover_path = COVERS_DIR / cover_filename
-            has_local_cover = cover_path.exists()
+        if entry['kind'] == 'bilibili':
+            detail = bv_detail_map.get(entry['key'])
+            if not detail:
+                continue
 
-            episodes.append({
-                "index": idx,
-                "title": clean_title,
-                "page": p.get('page', 1),
-                "bvid": bvid,
-                "cid": p.get('cid', 0),
-                "duration": p.get('duration') or detail.get('duration', 0),
-                "cover_url": f"/covers/{cover_filename}" if has_local_cover else "",
-                "cover_source": p.get('first_frame') or bv_pic,
-                "has_subtitle": None
-            })
-            idx += 1
-        else:
-            # 单个 BV 内含多个分 P
-            for p in pages:
-                sub_title = p.get('part') or f"P{p['page']}"
-                display_title = f"{bv_title} - {sub_title}" if len(bvids) > 1 else sub_title
+            pages = detail.get('pages', [])
+            bvid = detail['bvid']
+            bv_title = detail['title']
+            bv_pic = detail['pic']
+
+            if len(pages) <= 1:
+                p = pages[0] if pages else {'page': 1, 'cid': 0, 'part': bv_title, 'duration': detail['duration']}
+                clean_title = override or p.get('part') or bv_title
                 cover_filename = f"{bvid}_p{p['page']}.jpg"
-                cover_path = COVERS_DIR / cover_filename
-                has_local_cover = cover_path.exists()
+                has_local_cover = (COVERS_DIR / cover_filename).exists()
 
                 episodes.append({
                     "index": idx,
-                    "title": display_title,
+                    "title": clean_title,
                     "page": p.get('page', 1),
                     "bvid": bvid,
                     "cid": p.get('cid', 0),
-                    "duration": p.get('duration', 0),
+                    "duration": p.get('duration') or detail.get('duration', 0),
                     "cover_url": f"/covers/{cover_filename}" if has_local_cover else "",
                     "cover_source": p.get('first_frame') or bv_pic,
-                    "has_subtitle": None
+                    "has_subtitle": None,
+                    "source": "bilibili",
+                    "url": f"https://www.bilibili.com/video/{bvid}",
                 })
                 idx += 1
+            else:
+                # 单个 BV 内含多个分 P
+                for p in pages:
+                    sub_title = p.get('part') or f"P{p['page']}"
+                    if override:
+                        display_title = f"{override} - {sub_title}"
+                    else:
+                        display_title = f"{bv_title} - {sub_title}" if len(bvids) > 1 else sub_title
+                    cover_filename = f"{bvid}_p{p['page']}.jpg"
+                    has_local_cover = (COVERS_DIR / cover_filename).exists()
+
+                    episodes.append({
+                        "index": idx,
+                        "title": display_title,
+                        "page": p.get('page', 1),
+                        "bvid": bvid,
+                        "cid": p.get('cid', 0),
+                        "duration": p.get('duration', 0),
+                        "cover_url": f"/covers/{cover_filename}" if has_local_cover else "",
+                        "cover_source": p.get('first_frame') or bv_pic,
+                        "has_subtitle": None,
+                        "source": "bilibili",
+                        "url": f"https://www.bilibili.com/video/{bvid}?p={p.get('page', 1)}",
+                    })
+                    idx += 1
+        elif entry['kind'] == 'silidm':
+            # silidm 单集：ID 形如 silidm_<vod>-<sid>-<nid>，进度与缓存文件据此命名
+            url = entry['key']
+            episode_id = silidm_service.make_episode_id(url)
+            if not episode_id:
+                continue
+
+            meta = silidm_meta_map.get(url) or {}
+            album = album_map.get(str(entry.get('album_id'))) or {}
+            play = silidm_service.parse_play_path(url)
+            episode_number = int(play[2]) if play else 0
+            album_episode = (album.get('episodes') or {}).get(episode_number) or {}
+            page = 1
+            cover_filename = f"{episode_id}_p{page}.jpg"
+            has_local_cover = (COVERS_DIR / cover_filename).exists()
+            qiyi_title = album_episode.get('title', '')
+            qiyi_cover = album_episode.get('cover', '')
+
+            episodes.append({
+                "index": idx,
+                "title": qiyi_title or override or entry.get('title') or meta.get('title') or f"silidm 视频 {episode_id}",
+                "episode_title": qiyi_title or entry.get('episode_title') or meta.get('title', ''),
+                "series_title": album.get('title') or entry.get('series_title') or meta.get('album', ''),
+                "page": page,
+                "bvid": episode_id,
+                "cid": 0,
+                "duration": meta.get('duration', 0),
+                # 配置了 albumid 后，爱奇艺横版图优先于历史本地缓存，避免旧竖图造成黑边。
+                "cover_url": qiyi_cover or (f"/covers/{cover_filename}" if has_local_cover else ''),
+                "cover_source": qiyi_cover or entry.get('cover') or meta.get('cover', ''),
+                "metadata_source": "iqiyi" if qiyi_title or qiyi_cover else "silidm",
+                "album_id": entry.get('album_id', ''),
+                "has_subtitle": False,
+                "source": "silidm",
+                "url": url,
+            })
+            idx += 1
 
     if episodes:
         set_cached(cache_key, episodes)
@@ -587,7 +790,14 @@ async def download_and_cache_cover_async(bvid: str, page: int, cover_url: str) -
         return f"/covers/{cover_filename}"
 
     try:
-        response = await limited_get(cover_url)
+        # 爱奇艺等外部图床检测并拒收 B 站 Referer（会 403 触发熔断）；非 B 站图床清空 Referer 或设为主站
+        headers = None
+        if "iqiyipic.com" in cover_url:
+            headers = {"Referer": "https://www.iqiyi.com/"}
+        elif not any(domain in cover_url for domain in ("bilibili.com", "hdslb.com")):
+            headers = {"Referer": ""}
+
+        response = await limited_get(cover_url, headers=headers)
         if response and response.status == 200:
             content = await response.read()
             with open(cover_path, 'wb') as f:
@@ -845,6 +1055,30 @@ def _write_player_state(data: Dict) -> None:
     temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
     os.replace(temp, STATE_FILE)
 
+_STAGE_LABELS = {
+    'resolving': '解析视频源',
+    'downloading': '下载视频',
+    'downloading_audio': '下载音频',
+    'downloading_video': '下载视频',
+    'merging': '合并视频',
+}
+
+
+def _download_episode_sync(ep: Dict, target_folder: Path, progress_callback=None) -> str:
+    """按来源分派下载：B站走官方 DASH 合并，外部来源（silidm）走 ffmpeg 拉流。"""
+    service = _RESOLVERS.get(str(ep.get('source') or ''))
+    if service is not None:
+        if not ep.get('url'):
+            raise Exception(f"{ep.get('source')} 条目缺少原始链接")
+        final_path = target_folder / f"{ep['bvid']}_p{ep['page']}.mp4"
+        return service.stream_to_mp4(
+            ep['url'], final_path, float(ep.get('duration') or 0), progress_callback
+        )
+    return download_and_merge(ep['bvid'], {
+        'page': ep['page'], 'cid': ep['cid'], 'part': ep['title']
+    }, target_folder, progress_callback)
+
+
 async def _download_episode_task(task_id: str, folder_path: str, ep: Dict) -> None:
     task = _download_tasks[task_id]
     target_folder = safe_resolve_path(VIDEOS_DIR, folder_path)
@@ -855,12 +1089,10 @@ async def _download_episode_task(task_id: str, folder_path: str, ep: Dict) -> No
         task['progress'] = 5
 
         def on_progress(stage, progress):
-            task['stage'] = {'downloading_audio': '下载音频', 'downloading_video': '下载视频', 'merging': '合并视频'}.get(stage, stage)
+            task['stage'] = _STAGE_LABELS.get(stage, stage)
             task['progress'] = max(5, min(99, int(progress)))
 
-        await asyncio.to_thread(download_and_merge, ep['bvid'], {
-            'page': ep['page'], 'cid': ep['cid'], 'part': ep['title']
-        }, target_folder, on_progress)
+        await asyncio.to_thread(_download_episode_sync, ep, target_folder, on_progress)
         task.update(status='ready', stage='已完成', progress=100)
     except Exception as exc:
         task.update(status='failed', stage='下载失败', progress=0, error=str(exc))
@@ -902,6 +1134,13 @@ async def start_download(folder_path: str, item_index: int, bvid: Optional[str] 
     final_path = target_folder / f"{ep['bvid']}_p{ep['page']}.mp4"
     if final_path.exists():
         return {'status': 'ready', 'progress': 100, 'video_url': f"/static/{folder_path}/{final_path.name}"}
+
+    # 外部来源（silidm）：没有本地缓存时直接转流式播放（边下边播），
+    # 不再等待「整集下载 + ffmpeg 合并」——那是十几秒到几分钟的等待。
+    if ep.get('source') in _STREAM_SOURCES:
+        return {'status': 'ready', 'progress': 100, 'stream': True,
+                'video_url': _hls_playback_url(ep)}
+
     for task_id, task in _download_tasks.items():
         if task.get('folder_path') == folder_path and task.get('bvid') == ep['bvid'] and task.get('page') == ep['page'] and task.get('status') in {'queued', 'downloading'}:
             return {'task_id': task_id, **task}
@@ -916,6 +1155,65 @@ async def get_download_task(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail='Download task not found')
     return {'task_id': task_id, **task}
+
+
+def _hls_playback_url(ep: Dict) -> str:
+    """外部来源条目的流式播放地址（m3u8 代理路由）。"""
+    return f"/api/hls/{ep['bvid']}/index.m3u8"
+
+
+@app.get("/api/hls/{episode_id}/index.m3u8")
+async def get_hls_playlist(episode_id: str):
+    """HLS 播放列表代理 —— 外部来源（silidm）流式播放专用。
+
+    行为说明：
+
+    * 每次请求都**重新**解析一遍播放页：直链带签名且短时效，不能长期缓存复用。
+    * 列表里的分片 URI 会被**改写成后端代理地址** ``seg/<n>.ts``，
+      由 :func:`get_hls_segment` 代为下载（多连接并行，见 ``silidm.fetch_segment``）。
+      原因是上游 CDN 对单条连接限速，低于流的码率，浏览器直连会卡。
+    * 带 ``#EXT-X-KEY`` / ``#EXT-X-MAP`` 的流不做改写，保持浏览器直连。
+    """
+    service = _resolver_for_episode_id(episode_id)
+    if service is None:
+        raise HTTPException(status_code=400, detail='Invalid episode id')
+    url = service.url_from_episode_id(episode_id)
+    if not url:
+        raise HTTPException(status_code=400, detail='Invalid episode id')
+    try:
+        playlist = await asyncio.to_thread(service.proxied_playlist, episode_id, url)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f'解析失败: {exc}')
+    return Response(
+        content=playlist,
+        media_type='application/vnd.apple.mpegurl',
+        headers={'Cache-Control': 'no-store'},
+    )
+
+
+@app.get("/api/hls/{episode_id}/seg/{index}.ts")
+async def get_hls_segment(episode_id: str, index: int):
+    """HLS 分片代理 —— 用多连接并行拉取上游分片后原样返回。
+
+    上游 CDN 把单条连接压到 ~1.2Mbps（低于 2~2.8Mbps 的码率），
+    而总吞吐可达 8~11Mbps，因此这里对每个分片发多条 ``Range`` 请求并行下载再拼接。
+    """
+    service = _resolver_for_episode_id(episode_id)
+    if service is None:
+        raise HTTPException(status_code=400, detail='Invalid episode id')
+    segment_url = await asyncio.to_thread(service.segment_url_for, episode_id, index)
+    if not segment_url:
+        raise HTTPException(status_code=404, detail='Segment not found')
+    try:
+        data = await asyncio.to_thread(service.fetch_segment, segment_url)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f'分片下载失败: {exc}')
+    return Response(
+        content=data,
+        media_type='video/mp2t',
+        headers={'Cache-Control': 'public, max-age=3600'},
+    )
+
 
 # --- API Endpoints ---
 
@@ -942,12 +1240,22 @@ async def list_folders(path: str = ""):
                 video_count = 0
 
                 if has_list_file:
-                    try:
-                        with open(list_file, 'r', encoding='utf-8') as f:
-                            lines = [l.strip() for l in f if l.strip() and not l.startswith('#')]
-                            video_count = len(lines)
-                    except Exception:
-                        pass
+                    # 优先读取已落盘的缓存分集数，避免首页遍历触发阻塞式全量网络刮削
+                    cache_file = item / ".cache_episodes.json"
+                    if cache_file.exists():
+                        try:
+                            cached_data = json.loads(cache_file.read_text(encoding='utf-8'))
+                            if isinstance(cached_data, list):
+                                video_count = len(cached_data)
+                        except Exception:
+                            pass
+                    if video_count == 0:
+                        try:
+                            with open(list_file, 'r', encoding='utf-8') as f:
+                                lines = [l.strip() for l in f if l.strip() and not l.startswith('#')]
+                                video_count = len(lines)
+                        except Exception:
+                            pass
 
                 downloaded_count = 0
                 if has_list_file:
@@ -1072,15 +1380,50 @@ async def list_videos_in_folder(folder_path: str):
 
     return JSONResponse(content=episodes, headers={"Content-Type": "application/json; charset=utf-8"})
 
+async def _build_stream_covers(episode_id: str, page_numbers: List[int]) -> Dict[str, str]:
+    """为外部来源条目（silidm）获取封面（复用 B站 那套本地封面缓存命名）。"""
+    service = _resolver_for_episode_id(episode_id)
+    if service is None:
+        return {}
+    url = service.url_from_episode_id(episode_id)
+    if not url:
+        return {}
+
+    covers: Dict[str, str] = {}
+    pending = []
+    for page in page_numbers:
+        cover_filename = f"{episode_id}_p{page}.jpg"
+        if (COVERS_DIR / cover_filename).exists():
+            covers[str(page)] = f"/covers/{cover_filename}"
+        else:
+            pending.append(page)
+
+    if pending:
+        meta = await asyncio.to_thread(service.fetch_metadata, url)
+        cover_source = (meta or {}).get('cover', '')
+        if cover_source:
+            for page in pending:
+                downloaded = await download_and_cache_cover_async(episode_id, page, cover_source)
+                if downloaded:
+                    covers[str(page)] = downloaded
+    return covers
+
+
 @app.get("/api/batch/covers/{bvid}")
 async def get_batch_covers(bvid: str, pages: str):
-    """批量并发获取封面，带缓存与限流保护"""
+    """批量并发获取封面，带缓存与限流保护（支持 B站 BV 号与外部来源合成 ID）"""
     try:
-        if not re.match(r'^BV[a-zA-Z0-9]+$', bvid):
-            return JSONResponse(content={"covers": {}}, headers={"Content-Type": "application/json; charset=utf-8"})
-
         page_numbers = [int(p.strip()) for p in pages.split(',') if p.strip().isdigit()]
         if not page_numbers:
+            return JSONResponse(content={"covers": {}}, headers={"Content-Type": "application/json; charset=utf-8"})
+
+        if _resolver_for_episode_id(bvid) is not None:
+            return JSONResponse(
+                content={"covers": await _build_stream_covers(bvid, page_numbers)},
+                headers={"Content-Type": "application/json; charset=utf-8"},
+            )
+
+        if not re.match(r'^BV[a-zA-Z0-9]+$', bvid):
             return JSONResponse(content={"covers": {}}, headers={"Content-Type": "application/json; charset=utf-8"})
 
         bv_detail = await get_bv_detail_async(bvid)
@@ -1126,8 +1469,15 @@ async def get_batch_covers(bvid: str, pages: str):
 
 @app.get("/api/cover/{bvid}/{page_number}")
 async def get_video_cover(bvid: str, page_number: int):
-    """异步获取单个视频封面"""
+    """异步获取单个视频封面（支持 B站 BV 号与外部来源合成 ID）"""
     try:
+        if _resolver_for_episode_id(bvid) is not None:
+            cover_filename = f"{bvid}_p{page_number}.jpg"
+            if (COVERS_DIR / cover_filename).exists():
+                return JSONResponse(content={"cover_url": f"/covers/{cover_filename}", "cached": True}, headers={"Content-Type": "application/json; charset=utf-8"})
+            covers = await _build_stream_covers(bvid, [page_number])
+            return JSONResponse(content={"cover_url": covers.get(str(page_number), ""), "cached": False}, headers={"Content-Type": "application/json; charset=utf-8"})
+
         if not re.match(r'^BV[a-zA-Z0-9]+$', bvid):
             return JSONResponse(content={"cover_url": "", "cached": False}, headers={"Content-Type": "application/json; charset=utf-8"})
 
@@ -1191,22 +1541,25 @@ async def play_video(
     target_page = target_ep['page']
     target_cid = target_ep['cid']
     target_title = target_ep['title']
+    target_source = target_ep.get('source', 'bilibili')
 
     clean_name = re.sub(r'[\\/*?:"<>|]', "", target_title).strip() or f"{target_bvid}_p{target_page}"
     final_video_path = target_folder / f"{target_bvid}_p{target_page}.mp4"
-    legacy_video_path = target_folder / f"{clean_name}.mp4"
+    legacy_video_path = safe_resolve_path(target_folder, f"{clean_name}.mp4")
 
     def find_existing_video() -> Optional[Path]:
         for candidate in (final_video_path, legacy_video_path):
-            if candidate.exists() and candidate.is_file():
+            if candidate and candidate.exists() and candidate.is_file():
                 return candidate
         return None
 
-    # 字幕检查与获取（异步）
-    has_subtitle = await check_subtitle_availability_async(target_bvid, target_page, target_cid)
+    # 字幕仅 B站 提供；外部来源拿不到字幕，直接跳过
+    has_subtitle = False
     subtitle_url = ""
-    if has_subtitle:
-        subtitle_url = await download_and_cache_subtitle(target_bvid, target_page, target_cid)
+    if target_source == 'bilibili':
+        has_subtitle = await check_subtitle_availability_async(target_bvid, target_page, target_cid)
+        if has_subtitle:
+            subtitle_url = await download_and_cache_subtitle(target_bvid, target_page, target_cid)
 
     # 快捷路径：若已存在合成好的视频（同名或 BV 命名），直接返回并刷新 LRU 活跃度
     existing_video_path = find_existing_video()
@@ -1218,6 +1571,16 @@ async def play_video(
         return {
             "status": "ready",
             "video_url": f"/static/{folder_path}/{existing_video_path.name}",
+            "has_subtitle": has_subtitle,
+            "subtitle_url": subtitle_url
+        }
+
+    # 外部来源（silidm）条目：无本地缓存时走流式播放，避免阻塞在整集下载上
+    if target_source in _STREAM_SOURCES:
+        return {
+            "status": "ready",
+            "stream": True,
+            "video_url": _hls_playback_url(target_ep),
             "has_subtitle": has_subtitle,
             "subtitle_url": subtitle_url
         }
@@ -1244,8 +1607,7 @@ async def play_video(
             # 下载前执行 LRU 回收检查，预估需要约 200MB 空间（临时音视频+最终合并文件）
             await asyncio.to_thread(cleanup_video_cache, 200 * 1024 * 1024)
 
-            p_info = {'page': target_page, 'cid': target_cid, 'part': clean_name}
-            await asyncio.to_thread(download_and_merge, target_bvid, p_info, target_folder)
+            await asyncio.to_thread(_download_episode_sync, target_ep, target_folder, None)
 
             # 下载完成后刷新时间戳并再次核查水位
             if final_video_path.exists():

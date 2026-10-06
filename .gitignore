@@ -87,3 +87,8 @@ plyr.md
 
 # Runtime settings containing local credentials
 backend/settings.json
+.player_state.json
+
+# Development and scratch probes
+_probe/
+.workbuddy/

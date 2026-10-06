@@ -35,6 +35,19 @@ def _value(name: str, default: str) -> str:
 
 
 BILIBILI_COOKIE = _value("BILIBILI_COOKIE", "")
+
+# silidm.com（「电影先生」，苹果CMS 采集站）基址 —— 本项目唯一的外部视频来源。
+# list.txt 里可以写它的**详情页**（一行自动展开整季）或单集播放页：
+#   https://silidm.com/video/42675.html
+#   https://silidm.com/play/42675-1-1.html
+# 该站播放页内联 player_aaaa JSON，url 字段即 m3u8 明文直链（无加密、不校验 Referer）；
+# 直链域名会在 fengbao13.com / bfeng11.com 之间轮换，因此代码每次都从播放页现取。
+# 站点换域名时只改这一项。
+SILIDM_BASE = _value("SILIDM_BASE", "https://silidm.com")
+# silidm 分片并行下载连接数（1 = 单连接）。
+# 该站上游对**单连接**限速（实测 ~1Mbps，低于 3.8Mbps 码率），必须并行；
+# 但连接数一多（实测 8 路）上游会直接重置 TLS（SSLEOFError），因此保守取 4。
+SILIDM_SEGMENT_PARALLELISM = int(_value("SILIDM_SEGMENT_PARALLELISM", "4"))
 MAX_CACHE_SIZE_MB = int(_value("MAX_CACHE_SIZE_MB", "700"))
 TARGET_CACHE_SIZE_MB = int(_value("TARGET_CACHE_SIZE_MB", "500"))
 MIN_FREE_DISK_MB = int(_value("MIN_FREE_DISK_MB", "800"))
@@ -65,6 +78,10 @@ def log_startup_configuration() -> None:
         f"目标保留水位: {TARGET_CACHE_SIZE_MB}MB | "
         f"磁盘底线预警: {MIN_FREE_DISK_MB}MB"
     )
+    if SILIDM_BASE:
+        print(f"[视频来源] silidm 采集站: {SILIDM_BASE}（分片并行 {SILIDM_SEGMENT_PARALLELISM} 路）")
+    else:
+        print("【视频来源】未配置 SILIDM_BASE，list.txt 中的外部链接将无法播放")
 
 
 if sys.platform == "win32":

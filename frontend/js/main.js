@@ -1,4 +1,4 @@
-import { VideoPlayerApp } from '../app.js';
+import { VideoPlayerApp } from './app.js';
 
 document.addEventListener('DOMContentLoaded', () => {
     window.videoPlayerApp = new VideoPlayerApp();

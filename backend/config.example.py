@@ -14,6 +14,18 @@
 
 BILIBILI_COOKIE = """"""
 
+# --- silidm.com（「电影先生」，苹果CMS 采集站）---
+# list.txt 中允许写它的**详情页**（一行自动展开整季）或单集播放页：
+#   https://silidm.com/video/42675.html        # 详情页 —— 推荐，一行搞定整季
+#   https://silidm.com/play/42675-1-1.html     # 单集
+# 该站播放页内联 player_aaaa JSON，url 字段就是 m3u8 明文直链：
+# 无需解密、不校验 Referer；直链域名会轮换，代码每次从播放页现取。
+# 站点换域名时只改这一项即可。
+SILIDM_BASE = "https://silidm.com"
+# 分片并行连接数。单连接被上游限速到 ~1Mbps（不够 3.8Mbps 码率），必须并行；
+# 但连接太多会被重置 TLS（实测 8 路不稳），保守取 4。
+SILIDM_SEGMENT_PARALLELISM = 4
+
 # --- 磁盘与视频缓存管理策略 ---
 # 视频缓存占用上限（单位: MB）。当视频总大小超过此阈值时，自动按 LRU（最近最少使用）淘汰旧视频
 MAX_CACHE_SIZE_MB = 700

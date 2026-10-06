@@ -1,0 +1,4 @@
+# 来源：silidm.com（电影先生）—— 详情页一行自动展开整季 26 集
+# 该剧在 silidm 上只有一个播放源（第 1 源，凌点），1080p / 3.5Mbps，26 集全可播
+# 若只想看某一集，可改写成单集播放页：https://silidm.com/play/40717-1-1.html
+https://silidm.com/video/40717.html | albumid=3632708312155501

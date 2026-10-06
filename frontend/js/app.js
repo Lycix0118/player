@@ -365,7 +365,7 @@ export class VideoPlayerApp {
             container.innerHTML = `
                 <div class="empty-state">
                     <h3>📺 暂无视频</h3>
-                    <p>请在 list.txt 中添加B站视频链接</p>
+                    <p>请在 list.txt 中添加 B站 或 silidm（电影先生）视频链接</p>
                 </div>
             `;
             return;
@@ -382,20 +382,25 @@ export class VideoPlayerApp {
 
             // 如果已有本地缓存好的封面，直接展示，无需loading
             const hasCover = !!video.cover_url;
+            const coverUrl = /^https?:\/\//i.test(String(video.cover_url || ''))
+                ? video.cover_url
+                : this.apiBase + video.cover_url;
             const thumbnailHTML = hasCover
-                ? `<img src="${this.escapeHtml(this.apiBase + video.cover_url)}" alt="视频封面" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"><div class="placeholder-icon" style="display: none;">🎬</div>`
+                ? `<img src="${this.escapeHtml(coverUrl)}" alt="视频封面" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"><div class="placeholder-icon" style="display: none;">🎬</div>`
                 : '<div class="placeholder-icon">🎬</div>';
 
             const progress = video.progress;
             const progressPercent = progress && progress.duration ? Math.min(100, Math.round(progress.position / progress.duration * 100)) : 0;
             const progressHTML = progressPercent > 0 ? `<div class="video-progress"><span style="width:${progressPercent}%"></span></div><div class="video-progress-label">${progress.completed ? '已看完' : `已观看 ${progressPercent}%`}</div>` : '';
+            // 外部来源（silidm）加来源标识，方便与 B站 条目区分
+            const sourceLabel = { silidm: ' · 电影先生' }[video.source] || '';
             videoElement.innerHTML = `
                 <div class="video-thumbnail ${hasCover ? '' : 'loading'}">
                     ${thumbnailHTML}
                 </div>
                 <div class="video-info">
                     <div class="video-title">${this.escapeHtml(video.title)}</div>
-                    <div class="video-page">第 ${this.escapeHtml(videoIndex)} 集</div>
+                    <div class="video-page">第 ${this.escapeHtml(videoIndex)} 集${sourceLabel}</div>
                     ${video.duration ? `<div class="video-duration">${this.escapeHtml(this.formatDuration(video.duration))}</div>` : ''}
                     ${progressHTML}
                 </div>
@@ -464,8 +469,11 @@ export class VideoPlayerApp {
             const thumbnail = videoElement.querySelector('.video-thumbnail');
             if (thumbnail) {
                 thumbnail.classList.remove('loading');
+                const finalUrl = /^https?:\/\//i.test(String(coverUrl || ''))
+                    ? coverUrl
+                    : this.apiBase + coverUrl;
                 thumbnail.innerHTML = `
-                    <img src="${this.escapeHtml(this.apiBase + coverUrl)}" alt="视频封面"
+                    <img src="${this.escapeHtml(finalUrl)}" alt="视频封面"
                          onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
                     <div class="placeholder-icon" style="display: none;">🎬</div>
                 `;
@@ -529,7 +537,7 @@ export class VideoPlayerApp {
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const task = await response.json();
             if (task.status === 'ready') {
-                this.loadVideoPlayer(task.video_url);
+                this.loadVideoPlayer(task.video_url, { stream: task.stream });
                 await this.setupSubtitleForVideo(video);
             } else if (task.task_id) {
                 await this.pollDownloadTask(task.task_id, video);
@@ -543,6 +551,11 @@ export class VideoPlayerApp {
     }
 
     async setupSubtitleForVideo(video) {
+        // 只有 B站 有字幕接口；外部来源（silidm）直接跳过，避免无谓的 404 请求
+        if (video.source !== 'bilibili') {
+            this.setupSubtitleButton(video);
+            return;
+        }
         try {
             const response = await fetch(`${this.apiBase}/api/subtitle/${encodeURIComponent(this.currentFolder)}/${video.index || video.page}?bvid=${encodeURIComponent(video.bvid || '')}&page=${video.page || 1}`);
             if (response.ok) {
@@ -564,7 +577,7 @@ export class VideoPlayerApp {
             if (text) text.textContent = `${task.progress || 0}%`;
             if (hint) hint.textContent = task.stage || '正在准备播放，请稍候';
             if (task.status === 'ready') {
-                this.loadVideoPlayer(task.video_url || `/static/${this.currentFolder}/${video.bvid}_p${video.page}.mp4`);
+                this.loadVideoPlayer(task.video_url || `/static/${this.currentFolder}/${video.bvid}_p${video.page}.mp4`, { stream: task.stream });
                 await this.setupSubtitleForVideo(video);
                 return;
             }
@@ -583,18 +596,29 @@ export class VideoPlayerApp {
 
     clearVideoPlayer() {
         this.saveCurrentProgress(true);
+
+        const videoPlayer = document.getElementById('video-player');
+        const subtitleTrack = document.getElementById('subtitle-track');
+
+        // 顺序很关键：先暂停媒体，再拆 HLS —— hls.destroy() 会 revoke blob 源，
+        // 若此时媒体仍在加载会产生 ERR_FILE_NOT_FOUND 噪音；最后才销毁 Plyr 并清 src
+        if (videoPlayer) {
+            try { videoPlayer.pause(); } catch (_) {}
+        }
+        this.destroyHls();
+
         // 销毁现有的Plyr实例
         if (this.player) {
             try { this.player.destroy(); } catch (_) {}
             this.player = null;
         }
 
-        const videoPlayer = document.getElementById('video-player');
-        const subtitleTrack = document.getElementById('subtitle-track');
+        if (this._mediaErrorHandler && videoPlayer) {
+            try { videoPlayer.removeEventListener('error', this._mediaErrorHandler); } catch (_) {}
+            this._mediaErrorHandler = null;
+        }
 
-        // 暂停并清空当前视频
         if (videoPlayer) {
-            try { videoPlayer.pause(); } catch (_) {}
             videoPlayer.removeAttribute('src');
             if (subtitleTrack) {
                 subtitleTrack.src = '';
@@ -608,6 +632,7 @@ export class VideoPlayerApp {
     }
 
     stopVideo() {
+        this.destroyHls();
         if (this.player) {
             try { this.player.pause(); } catch(_) {}
             try { this.player.currentTime = 0; } catch(_) {}
@@ -625,18 +650,93 @@ export class VideoPlayerApp {
         }
     }
 
-    loadVideoPlayer(videoUrl) {
+    loadVideoPlayer(videoUrl, options = {}) {
         const videoPlayer = document.getElementById('video-player');
         if (!videoPlayer) return;
 
-        // 直接规范设置 video.src，避免动态修改 source 标签的兼容性缺陷
-        videoPlayer.src = `${this.apiBase}${videoUrl}`;
-        videoPlayer.preload = 'auto';
+        // 播放类型判定：后端显式标记优先，其次看地址后缀（.m3u8 即 HLS 流式）
+        const useHls = Boolean(options.stream) || /\.m3u8(?:[?#]|$)/i.test(videoUrl);
+
+        // 换源前必须先拆掉上一路 HLS，否则旧实例会继续向后端与 CDN 拉分片
+        this.destroyHls();
+
+        if (useHls) {
+            this.attachHlsStream(videoUrl);
+        } else {
+            // 直接规范设置 video.src，避免动态修改 source 标签的兼容性缺陷
+            videoPlayer.src = `${this.apiBase}${videoUrl}`;
+            videoPlayer.preload = 'auto';
+        }
 
         // 初始化Plyr播放器统一托管播放时序
         this.initPlyrPlayer();
 
         this.hideDownloadProgress();
+    }
+
+    attachHlsStream(videoUrl) {
+        const videoPlayer = document.getElementById('video-player');
+        if (!videoPlayer) return;
+
+        const source = `${this.apiBase}${videoUrl}`;
+        this.hlsRetryCount = 0;
+
+        // Safari/iOS 原生支持 HLS，直接交给 video 元素，无需 hls.js
+        if (!window.Hls || !window.Hls.isSupported()) {
+            if (videoPlayer.canPlayType('application/vnd.apple.mpegurl')) {
+                videoPlayer.src = source;
+                videoPlayer.preload = 'auto';
+                return;
+            }
+            this.showError('当前浏览器不支持流式播放');
+            return;
+        }
+
+        const hls = new window.Hls({
+            // 分片由浏览器直连 CDN，后端只代理播放列表，缓冲可以留宽一些
+            maxBufferLength: 30,
+            maxMaxBufferLength: 60,
+            enableWorker: true
+        });
+        this.hls = hls;
+
+        hls.on(window.Hls.Events.FRAG_LOADED, () => {
+            this.hlsRetryCount = 0;
+        });
+
+        hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+            this.hlsRetryCount = 0;
+        });
+
+        hls.on(window.Hls.Events.ERROR, (_event, data) => {
+            if (!data || !data.fatal) return;
+
+            // 起播阶段抖动或解析站限流：短暂退避后重试（startLoad 会重新换取签名）
+            if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR && this.hlsRetryCount < 3) {
+                this.hlsRetryCount += 1;
+                const delay = 1000 * this.hlsRetryCount;
+                console.warn(`HLS 网络错误，${delay}ms 后重试（第 ${this.hlsRetryCount} 次）`, data.details);
+                setTimeout(() => { try { hls.startLoad(); } catch (_) {} }, delay);
+                return;
+            }
+
+            if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) {
+                console.warn('HLS 媒体错误，尝试恢复', data.details);
+                try { hls.recoverMediaError(); return; } catch (_) {}
+            }
+
+            console.error('HLS 无法恢复的错误:', data);
+            this.showError('视频流加载失败，请重试');
+        });
+
+        hls.loadSource(source);
+        hls.attachMedia(videoPlayer);
+    }
+
+    destroyHls() {
+        if (!this.hls) return;
+        try { this.hls.destroy(); } catch (_) {}
+        this.hls = null;
     }
 
     async saveCurrentProgress(force = false) {
@@ -779,7 +879,10 @@ export class VideoPlayerApp {
         this.player.on('ready', () => {
             console.log('Plyr播放器已就绪');
             // 如果有字幕且默认开启，则启用字幕
-            if (this.settings.subtitles && this.subtitleEnabled && this.player.captions && this.player.captions.tracks.length > 0) {
+            // 注意：player.captions 存在并不代表 captions.tracks 存在（Plyr 在部分时序下
+            // 会返回 undefined），直接取 .length 会抛 TypeError，必须先判空
+            const captionTracks = this.player.captions && this.player.captions.tracks;
+            if (this.settings.subtitles && this.subtitleEnabled && captionTracks && captionTracks.length > 0) {
                 this.player.captions.active = true;
             }
             if (this.settings.autoplay) {
@@ -821,11 +924,18 @@ export class VideoPlayerApp {
             this.showError('视频播放失败，请检查网络连接或重试');
         });
 
-        // 视频加载错误处理
-        this.player.media.addEventListener('error', (e) => {
+        // 视频加载错误处理（避免重复绑定并在清空/销毁时不误报）
+        if (this._mediaErrorHandler && this.player.media) {
+            try { this.player.media.removeEventListener('error', this._mediaErrorHandler); } catch (_) {}
+        }
+        this._mediaErrorHandler = (e) => {
+            const videoPlayer = document.getElementById('video-player');
+            // 正在清空或无有效播放源时忽略
+            if (!videoPlayer || (!videoPlayer.src && !videoPlayer.currentSrc)) return;
             console.error('视频加载错误:', e);
             this.showError('视频文件加载失败');
-        });
+        };
+        this.player.media.addEventListener('error', this._mediaErrorHandler);
 
         // 检测视频是否可以播放
         this.player.on('canplay', () => {
