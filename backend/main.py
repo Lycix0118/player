@@ -47,6 +47,8 @@ try:
         set_bilibili_cookie,
     )
     from . import silidm as silidm_service
+    # iqiyi_metadata 不是播放来源，只做专辑元数据（真实集名/封面）增强，
+    # 仅在 list.txt 某行写了 `| albumid=` 时生效。详见该模块 docstring。
     from . import iqiyi_metadata as iqiyi_service
     from . import time_limits as time_limits_service
 except ImportError:
@@ -85,8 +87,10 @@ log_startup_configuration()
 # make_episode_id / fetch_metadata / proxied_playlist / segment_url_for /
 # fetch_segment / stream_to_mp4。这里按 episode_id 前缀挑对应的实现，
 # 路由与下载逻辑就都不必关心来源差异。
-# 目前只有 silidm 一个外部来源（爱奇艺链路已整体移除）；保留这层分派是为了
+# 目前只有 silidm 一个外部来源（爱奇艺**播放**链路已整体移除）；保留这层分派是为了
 # 以后新增来源时只补一个同接口模块、不必再动路由。
+# 注意：爱奇艺的**元数据**增强仍在用（iqiyi_metadata.py + list.txt 的 `| albumid=`），
+# 那是独立的一条链路、与这里的播放来源分派无关，不要跟着一起清理。
 _RESOLVERS = {
     "silidm": silidm_service,
 }
