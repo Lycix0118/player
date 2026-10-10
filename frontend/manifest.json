@@ -1,0 +1,29 @@
+{
+  "name": "儿童视频播放器",
+  "short_name": "小电视",
+  "description": "专为儿童设计的本地视频播放器：B站与电影先生双来源，安全、简单、有趣。",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#F8F9FA",
+  "theme_color": "#FF6B6B",
+  "categories": ["video", "kids", "entertainment"],
+  "icons": [
+    {
+      "src": "icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

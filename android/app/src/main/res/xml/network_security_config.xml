@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  后端是局域网明文 HTTP（http://192.168.x.x:8000 或模拟器 http://10.0.2.2:8000）。
+  Android 9+ 默认禁止明文流量，这里显式放开，否则所有请求直接失败。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

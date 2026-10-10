@@ -94,3 +94,13 @@ backend/settings.json
 # Development and scratch probes
 _probe/
 .workbuddy/
+
+# Android
+.gradle/
+**/build/
+android/.gradle/
+android/local.properties
+android/**/build/
+android/.idea/
+android/**/*.iml
+*.apk

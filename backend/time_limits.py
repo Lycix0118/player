@@ -108,6 +108,26 @@ def get_time_limits_status(state: Dict[str, Any], videos_dir: Path) -> Dict[str,
         if isinstance(k, str)
     }
 
+    # Yesterday and recent history
+    yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    yesterday_log = daily_logs.get(yesterday) or {}
+    yesterday_used_seconds = max(0.0, float(yesterday_log.get("total_seconds") or 0.0))
+
+    recent_history = []
+    for d, log_data in sorted(daily_logs.items(), reverse=True):
+        if not isinstance(log_data, dict):
+            continue
+        recent_history.append({
+            "date": d,
+            "total_seconds": int(max(0.0, float(log_data.get("total_seconds") or 0.0))),
+            "folders": {
+                str(k).replace('\\', '/').strip('/'): int(max(0.0, float(v or 0.0)))
+                for k, v in (log_data.get("folders") or {}).items()
+                if isinstance(k, str)
+            }
+        })
+    recent_history = recent_history[:7]
+
     # Global limit calculations
     effective_global_limit_minutes = (global_limit_minutes + bonus_global_minutes) if global_limit_minutes > 0 else 0
     effective_global_limit_seconds = effective_global_limit_minutes * 60
@@ -167,6 +187,9 @@ def get_time_limits_status(state: Dict[str, Any], videos_dir: Path) -> Dict[str,
 
     return {
         "date": today,
+        "yesterday_date": yesterday,
+        "yesterday_used_seconds": int(yesterday_used_seconds),
+        "recent_history": recent_history,
         "enabled": enabled,
         "has_parent_pin": bool(parent_pin),
         "global_limit_minutes": global_limit_minutes,
@@ -189,7 +212,7 @@ def record_heartbeat(
     prune_old_logs(state)
 
     clean_path = str(folder_path or "").replace('\\', '/').strip('/')
-    clamped_delta = max(0.5, min(float(delta_seconds), 30.0))
+    clamped_delta = max(0.5, min(float(delta_seconds), 60.0))
 
     today = get_today_key()
     logs = state.setdefault("daily_watch_logs", {})

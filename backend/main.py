@@ -32,6 +32,7 @@ try:
         limited_get_sync,
     )
     from .settings import (
+        BASE_DIR,
         BILIBILI_COOKIE,
         COVERS_DIR,
         DEFAULT_PLAYER_SETTINGS,
@@ -62,6 +63,7 @@ except ImportError:
         limited_get_sync,
     )
     from settings import (
+        BASE_DIR,
         BILIBILI_COOKIE,
         COVERS_DIR,
         DEFAULT_PLAYER_SETTINGS,
@@ -1944,6 +1946,52 @@ async def get_subtitle(
         raise HTTPException(status_code=404, detail="No subtitle available for this video.")
 
     return {"subtitle_url": subtitle_path}
+
+# --- App Version & Download Routes ---
+APP_VERSION_FILE = BASE_DIR / "app_version.json"
+APK_FILE = BASE_DIR / "app-release.apk"
+
+@app.get("/api/app/version")
+async def get_app_version():
+    """获取最新 Android 客户端版本与更新说明"""
+    default_info = {
+        "version_code": 2,
+        "version_name": "1.0.1",
+        "min_version_code": 1,
+        "download_url": "/api/app/download",
+        "file_name": "app-release.apk",
+        "file_size": 0,
+        "release_date": "2026-10-10",
+        "changelog": "1. 优化播放器在宽屏平板下的布局与画面自适应\n2. 移除冗余全屏按钮，与原生控制栏全屏无缝联动\n3. 新增应用内版本检测与在线更新功能",
+    }
+    info = default_info.copy()
+    if APP_VERSION_FILE.exists():
+        try:
+            custom_data = json.loads(APP_VERSION_FILE.read_text(encoding="utf-8"))
+            if isinstance(custom_data, dict):
+                info.update(custom_data)
+        except Exception as e:
+            print(f"[AppUpdate] 读取 {APP_VERSION_FILE} 失败: {e}")
+    else:
+        try:
+            APP_VERSION_FILE.write_text(json.dumps(default_info, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    if APK_FILE.exists():
+        info["file_size"] = APK_FILE.stat().st_size
+    return info
+
+@app.api_route("/api/app/download", methods=["GET", "HEAD"])
+async def download_app_apk():
+    """下载最新 Android 客户端安装包"""
+    if not APK_FILE.exists():
+        raise HTTPException(status_code=404, detail="服务器上暂未上传安装包 (app-release.apk)")
+    return FileResponse(
+        APK_FILE,
+        filename="app-release.apk",
+        media_type="application/vnd.android.package-archive",
+    )
 
 # --- Frontend Routes ---
 @app.get("/", response_class=HTMLResponse)

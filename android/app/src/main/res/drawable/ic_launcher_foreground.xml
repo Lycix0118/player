@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 萌趣小电视图标前景：天线 + 机身 + 屏幕 + 眼睛 + 旋钮 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 天线 -->
+    <path
+        android:strokeColor="#FF4757"
+        android:strokeWidth="3.2"
+        android:strokeLineCap="round"
+        android:pathData="M46,30 L38,19" />
+    <path
+        android:strokeColor="#FF4757"
+        android:strokeWidth="3.2"
+        android:strokeLineCap="round"
+        android:pathData="M62,30 L70,19" />
+    <path
+        android:fillColor="#FF4757"
+        android:pathData="M38,19 m-3,0 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0" />
+    <path
+        android:fillColor="#FF4757"
+        android:pathData="M70,19 m-3,0 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0" />
+
+    <!-- 机身 -->
+    <path
+        android:fillColor="#FF6B6B"
+        android:pathData="M28,32 L80,32 A8,8 0 0,1 88,40 L88,74 A8,8 0 0,1 80,82 L28,82 A8,8 0 0,1 20,74 L20,40 A8,8 0 0,1 28,32 Z" />
+
+    <!-- 屏幕 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,39 L70,39 A5,5 0 0,1 75,44 L75,68 A5,5 0 0,1 70,73 L30,73 A5,5 0 0,1 25,68 L25,44 A5,5 0 0,1 30,39 Z" />
+
+    <!-- 眼睛 -->
+    <path
+        android:fillColor="#3C4043"
+        android:pathData="M41,52 m-4.5,0 a4.5,4.5 0 1,0 9,0 a4.5,4.5 0 1,0 -9,0" />
+    <path
+        android:fillColor="#3C4043"
+        android:pathData="M59,52 m-4.5,0 a4.5,4.5 0 1,0 9,0 a4.5,4.5 0 1,0 -9,0" />
+
+    <!-- 笑意 -->
+    <path
+        android:strokeColor="#3C4043"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round"
+        android:pathData="M44,63 Q50,67.5 56,63" />
+
+    <!-- 旋钮 -->
+    <path
+        android:fillColor="#FFE66D"
+        android:pathData="M82,46 m-3,0 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0" />
+    <path
+        android:fillColor="#FFE66D"
+        android:pathData="M82,58 m-3,0 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0" />
+</vector>

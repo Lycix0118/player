@@ -1,0 +1,10 @@
+{
+  "version_code": 2,
+  "version_name": "1.0.1",
+  "min_version_code": 1,
+  "download_url": "/api/app/download",
+  "file_name": "app-release.apk",
+  "file_size": 0,
+  "release_date": "2026-10-10",
+  "changelog": "1. 优化播放器在宽屏平板下的布局与画面自适应\n2. 移除冗余全屏按钮，与原生控制栏全屏无缝联动\n3. 新增应用内版本检测与在线更新功能"
+}
