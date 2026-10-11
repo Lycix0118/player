@@ -652,8 +652,11 @@ export class TimeLimitsController {
                 if (data.should_lock && !this.isLocked) {
                     this.triggerLockout(data.lock_reason);
                 }
+            } else {
+                this.unreportedSeconds += delta;
             }
         } catch (err) {
+            this.unreportedSeconds += delta;
             console.warn('心跳上报失败:', err);
         }
     }

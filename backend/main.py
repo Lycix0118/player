@@ -264,7 +264,7 @@ def optimize_existing_videos_faststart_bg():
                     p = Path(root) / f
                     try:
                         with open(p, 'rb') as fp:
-                            header = fp.read(1024)
+                            header = fp.read(65536)
                             if b'moov' in header:
                                 continue
                         # 需要转换
@@ -1066,9 +1066,14 @@ def _read_player_state() -> Dict:
     return {}
 
 def _write_player_state(data: Dict) -> None:
-    temp = STATE_FILE.with_suffix('.tmp')
-    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
-    os.replace(temp, STATE_FILE)
+    temp = STATE_FILE.with_name(f".{STATE_FILE.name}.{os.getpid()}_{uuid.uuid4().hex}.tmp")
+    try:
+        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+        os.replace(temp, STATE_FILE)
+    except Exception as e:
+        print(f"[StateFile] 写入状态文件失败: {e}")
+    finally:
+        temp.unlink(missing_ok=True)
 
 _STAGE_LABELS = {
     'resolving': '解析视频源',
@@ -1434,7 +1439,10 @@ async def record_playback_heartbeat(request: Request):
         raise HTTPException(status_code=400, detail="JSON body must be an object")
 
     folder_path = str(payload.get("folder_path") or "")
-    delta_seconds = float(payload.get("delta_seconds") or 0.0)
+    try:
+        delta_seconds = float(payload.get("delta_seconds") or 0.0)
+    except (TypeError, ValueError):
+        delta_seconds = 0.0
 
     async with _progress_lock:
         state = _read_player_state()

@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -518,6 +519,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (player != null) return
         val newPlayer = ExoPlayer.Builder(appContext).build().apply {
             repeatMode = Player.REPEAT_MODE_OFF
+            setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .setUsage(C.USAGE_MEDIA)
+                    .build(),
+                /* handleAudioFocus = */ true,
+            )
             trackSelectionParameters = trackSelectionParameters.buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !settings.subtitles)
                 .build()
@@ -1151,6 +1159,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun installApk(file: java.io.File) {
         try {
             val context = appContext
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                if (!context.packageManager.canRequestPackageInstalls()) {
+                    showToast("请在系统设置中允许安装更新")
+                    val manageIntent = android.content.Intent(
+                        android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:${context.packageName}"),
+                    ).apply {
+                        flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                    }
+                    context.startActivity(manageIntent)
+                    return
+                }
+            }
             val uri = androidx.core.content.FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.fileprovider",

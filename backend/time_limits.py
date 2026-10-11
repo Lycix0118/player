@@ -8,8 +8,14 @@ Supports:
 """
 
 import datetime
+import math
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+_leaf_folders_cache: Optional[List[Dict[str, str]]] = None
+_leaf_folders_cache_time: float = 0.0
+_LEAF_FOLDERS_CACHE_TTL: float = 30.0
 
 
 def get_today_key() -> str:
@@ -18,7 +24,12 @@ def get_today_key() -> str:
 
 
 def get_playable_leaf_folders(videos_dir: Path) -> List[Dict[str, str]]:
-    """Scan VIDEOS_DIR to find all leaf / playable directories."""
+    """Scan VIDEOS_DIR to find all leaf / playable directories (cached)."""
+    global _leaf_folders_cache, _leaf_folders_cache_time
+    now = time.monotonic()
+    if _leaf_folders_cache is not None and (now - _leaf_folders_cache_time < _LEAF_FOLDERS_CACHE_TTL):
+        return [dict(f) for f in _leaf_folders_cache]
+
     if not videos_dir.exists() or not videos_dir.is_dir():
         return []
 
@@ -54,6 +65,8 @@ def get_playable_leaf_folders(videos_dir: Path) -> List[Dict[str, str]]:
                 "path": rel_path
             })
 
+    _leaf_folders_cache = [dict(f) for f in leaf_folders]
+    _leaf_folders_cache_time = now
     return leaf_folders
 
 
@@ -206,14 +219,21 @@ def record_heartbeat(
     state: Dict[str, Any],
     folder_path: str,
     delta_seconds: float,
-    videos_dir: Path
+    videos_dir: Optional[Path] = None
 ) -> Tuple[Dict[str, Any], bool]:
-    """Accrue active playback watch time and return updated limits and lock flag."""
+    """Accrue active playback watch time and return updated limits and lock flag (zero disk I/O)."""
     prune_old_logs(state)
 
-    clean_path = str(folder_path or "").replace('\\', '/').strip('/')
-    clamped_delta = max(0.5, min(float(delta_seconds), 60.0))
+    try:
+        val = float(delta_seconds)
+        if math.isnan(val) or val <= 0:
+            clamped_delta = 0.0
+        else:
+            clamped_delta = max(0.5, min(val, 60.0))
+    except (TypeError, ValueError):
+        clamped_delta = 0.0
 
+    clean_path = str(folder_path or "").replace('\\', '/').strip('/')
     today = get_today_key()
     logs = state.setdefault("daily_watch_logs", {})
     today_log = logs.setdefault(today, {
@@ -223,34 +243,61 @@ def record_heartbeat(
         "bonus_folder_minutes": {}
     })
 
-    today_log["total_seconds"] = float(today_log.get("total_seconds", 0.0)) + clamped_delta
-    folders_dict = today_log.setdefault("folders", {})
-    if clean_path:
-        folders_dict[clean_path] = float(folders_dict.get(clean_path, 0.0)) + clamped_delta
+    if clamped_delta > 0:
+        today_log["total_seconds"] = float(today_log.get("total_seconds", 0.0)) + clamped_delta
+        if clean_path:
+            folders_dict = today_log.setdefault("folders", {})
+            folders_dict[clean_path] = float(folders_dict.get(clean_path, 0.0)) + clamped_delta
 
-    # Re-evaluate status
-    status = get_time_limits_status(state, videos_dir)
+    cfg = state.get("time_limits", {})
+    if not isinstance(cfg, dict):
+        cfg = {}
 
-    # Check if folder or global is locked
+    enabled = bool(cfg.get("enabled", False))
+    global_limit_minutes = max(0, int(cfg.get("global_limit_minutes") or 0))
+    bonus_global_minutes = max(0, int(today_log.get("bonus_global_minutes") or 0))
+    eff_global_min = (global_limit_minutes + bonus_global_minutes) if global_limit_minutes > 0 else 0
+    eff_global_sec = eff_global_min * 60
+
+    total_used_sec = max(0.0, float(today_log.get("total_seconds") or 0.0))
+    global_remaining_sec: Optional[int] = None
+    if eff_global_sec > 0:
+        global_remaining_sec = max(0, eff_global_sec - int(total_used_sec))
+    global_is_locked = bool(enabled and eff_global_sec > 0 and total_used_sec >= eff_global_sec)
+
+    # Folder limit check
+    raw_folder_limits = cfg.get("folder_limits") or {}
+    folder_limit_min = max(0, int(raw_folder_limits.get(clean_path) or 0))
+    raw_bonus_folders = today_log.get("bonus_folder_minutes") or {}
+    bonus_folder_min = max(0, int(raw_bonus_folders.get(clean_path) or 0))
+    eff_folder_min = (folder_limit_min + bonus_folder_min) if folder_limit_min > 0 else 0
+    eff_folder_sec = eff_folder_min * 60
+
+    folder_used_sec = int(max(0.0, float((today_log.get("folders") or {}).get(clean_path) or 0.0)))
+    folder_remaining_sec: Optional[int] = None
+    if eff_folder_sec > 0:
+        folder_remaining_sec = max(0, eff_folder_sec - folder_used_sec)
+    folder_self_locked = bool(enabled and eff_folder_sec > 0 and folder_used_sec >= eff_folder_sec)
+
     is_locked = False
     lock_reason: Optional[str] = None
     remaining_seconds: Optional[int] = None
 
-    if status["enabled"]:
-        if status["global_is_locked"]:
+    if enabled:
+        if global_is_locked:
             is_locked = True
             lock_reason = "global"
             remaining_seconds = 0
+        elif folder_self_locked:
+            is_locked = True
+            lock_reason = "folder"
+            remaining_seconds = 0
         else:
-            folder_info = next((f for f in status["folders"] if f["path"] == clean_path), None)
-            if folder_info:
-                remaining_seconds = folder_info["remaining_seconds"]
-                if folder_info["is_locked"]:
-                    is_locked = True
-                    lock_reason = "folder"
-                    remaining_seconds = 0
-            else:
-                remaining_seconds = status["global_remaining_seconds"]
+            candidates = [s for s in (folder_remaining_sec, global_remaining_sec) if s is not None]
+            remaining_seconds = min(candidates) if candidates else None
+    else:
+        candidates = [s for s in (folder_remaining_sec, global_remaining_sec) if s is not None]
+        remaining_seconds = min(candidates) if candidates else None
 
     return {
         "status": "ok",
@@ -259,7 +306,7 @@ def record_heartbeat(
         "folder_path": clean_path,
         "delta_seconds": clamped_delta,
         "remaining_seconds": remaining_seconds,
-        "global_remaining_seconds": status["global_remaining_seconds"],
+        "global_remaining_seconds": global_remaining_sec,
         "date": today
     }, is_locked
 

@@ -147,13 +147,14 @@ async def limited_get(
                 response = await session.get(url, params=params, headers=headers)
                 if response.status == 200:
                     return response
-                if response.status in (403, 429):
-                    _set_cooldown(url, 60.0 * (2 ** attempt))
+                try:
+                    if response.status in (403, 429):
+                        _set_cooldown(url, 60.0 * (2 ** attempt))
+                        return None
+                    if not 500 <= response.status < 600:
+                        return None
+                finally:
                     response.release()
-                    return None
-                if not 500 <= response.status < 600:
-                    response.release()
-                    return None
             except (aiohttp.ClientError, asyncio.TimeoutError):
                 pass
         await asyncio.sleep(_jitter(backoff))

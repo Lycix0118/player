@@ -15,7 +15,7 @@
  *          其余 /api/*  观看进度、限时心跳、设置、缓存状态必须实时
  */
 
-const VERSION = 'v1';
+const VERSION = 'v1.0.1';
 const SHELL_CACHE = `player-shell-${VERSION}`;
 const MEDIA_CACHE = `player-media-${VERSION}`;
 
